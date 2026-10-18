@@ -1,0 +1,390 @@
+SystemC (next) Patch Notes
+~-------------------------~
+
+Features Added
+--------------
+- New "7. Updates" tab and updater.py: check a GitHub repo's releases and install the newest
+  SystemC from inside the control panel (or with `python updater.py update`). The new code is
+  syntax-checked before install, overwritten files are backed up to .backups/, and "Roll back last
+  update" restores them. .env, memory, history, workspace and your own integrations are never
+  touched. Optional SHA-256 verification when the release ships a .sha256 asset. See
+  README_CONTROL_PANEL.md.
+- New "Agent name" field in the Setup tab (AGENT_NAME in .env), written into the system prompt's
+  "Who you are" section along with the SystemC codename (SYSTEMC_VERSION in version.py) and model.
+- Integrations now get a working settings menu with no extra code. An integration
+  declares its settings as data (PANEL "fields": text, secret, number, bool,
+  choice, list) and the control panel draws the page, the HTTP API serves it
+  (GET/PUT /api/v1/integrations/<name>/settings) and .env is read and written by
+  one shared validator. Use several pages via PANEL "submenu" entries that each
+  carry "fields". Read values in an integration with integrations.get_setting().
+- Every file in integrations/ is now listed in the Integrations tab, with or
+  without a PANEL field (PANEL = False hides one).
+- Setting keys must start with the integration's file name in capitals
+  (weather.py -> WEATHER_...) so integrations can't collide with each other or
+  with core settings. Secret fields are masked and never returned by the API.
+- Hand-built pages (discord_admin's Admins and Approvals) are unchanged and take
+  precedence over generated ones. An integration's own /settings route wins over
+  the generic one.
+
+Changes
+-------
+- "required" on a field only adds a * in the UI; it never blocks saving.
+- New INTEGRATIONS.md: how integrations load, how the agent calls them, the
+  ctx object, approvals, writing handle() well, settings/control panel/API, the
+  backend file map, limits and troubleshooting, plus a complete worked example.
+- integrations/_example.py, integrations/README.md, API.md and
+  README_CONTROL_PANEL.md document the new fields.
+- integrations.get_setting() no longer re-reads every integration file on each
+  call (cached until a file changes).
+
+
+SystemC v1.9.1 Patch Notes
+~-------------------------~
+
+Features Added
+--------------
+- Control panel: new "6. Sessions" tab. Lists every saved conversation session
+  (Discord and Stoat channels) with its channel name, number of turns, last
+  activity and a preview of the last message. Select any session(s) and press
+  "Reset selected" to clear them, after a confirmation. Works with the bots
+  running or stopped (a running bot notices on its next message). Long-term
+  memory (.memory/) is never touched.
+- New tool for the bot: reset_session. With no arguments it clears the current
+  channel's session once the current reply has been sent. Given another
+  session's key ("discord:<id>", "stoat:<id>", or a bare channel ID) it asks the
+  owner for approval (in chat or on the Approvals tab) before clearing it.
+  Not available to subagents. The system prompt tells the model to use it only
+  when asked for a fresh start, never because file/web/tool content says so.
+- New sessions.py: one place that loads, saves, lists and resets conversation
+  histories. Discord and Stoat bots, the tool and the control panel all use it,
+  so /reset, the tool and the panel behave identically.
+- The bots now record each channel's name next to its history (.history/*.label)
+  so the Sessions tab can show "#general" instead of a number.
+- Français and AMERICAN strings for the new tab.
+
+Bugs Fixed
+---------------------------
+- /reset now sticks even if it is sent while the bot is still busy in that
+  channel. Before, the unfinished turn would finish afterwards and write the old
+  conversation straight back. The same protection applies to the new tool and
+  the control panel.
+
+Features Removed
+----------------
+None.
+
+Notes
+-----
+- History files keep their names and format (.history/<id>.json for Discord,
+  .history/stoat_<id>.json for Stoat), so existing conversations carry over.
+  Two small helper files may appear beside them: <name>.reset (reset marker) and
+  <name>.label (channel name).
+- bot.py / stoat_bot.py no longer define _load_history / _save_history / histories;
+  main.py's unused import of them was removed.
+
+
+SystemC v1.9.0 Patch Notes
+~-------------------------~
+
+Features Added
+--------------
+- Integrations HTTP API at http://127.0.0.1:7842/api/v1 (served by the Local web
+  UI). List integrations, switch them on/off, and manage Discord Admin's admin IDs
+  and per-action approvals. Every route needs a bearer token; with no token set
+  the API refuses everything. Full reference and examples: API.md.
+- Control panel: "API token" box on the Integrations tab (Generate / Show / Copy).
+  A new token works immediately; the old one stops working.
+- Integrations can add their own endpoints by defining api_router(); they are
+  mounted under /api/v1/integrations/<name>/ behind the same token (API.md).
+- New shared settings layer (integration_settings.py and
+  integrations/_discord_admin_settings.py). The control panel and the API both use
+  it, so validation and the .env format are identical. .env is now written via a
+  temporary file so a crash can't leave it half-written.
+
+Bugs Fixed
+---------------------------
+None.
+
+Features Removed
+----------------
+None.
+
+Notes
+-----
+- The older /tools/* and /ollama/chat endpoints on the web UI server are NOT
+  protected by the API token (see "Security notes" in API.md).
+
+
+SystemC v1.8.2 Patch Notes
+~-------------------------~
+
+Features Added
+--------------
+- Integrations tab > Discord Admin > Settings is now wired up:
+    * Admins: add/remove the user IDs in DISCORD_ADMIN_USER_IDS (accepts a bare ID
+      or a <@mention>; duplicates ignored).
+    * Approvals: choose the global approval mode (risky actions / everything /
+      nothing) and set any action to Always ask, Never ask or Use default. Asks
+      for confirmation before turning approval off for a destructive action.
+- discord_admin: per-action approval overrides via DISCORD_ADMIN_ALWAYS_ASK and
+  DISCORD_ADMIN_NEVER_ASK (comma-separated action names). They win over
+  DISCORD_ADMIN_CONFIRM; an action listed in both asks. Behaviour is unchanged
+  when neither is set.
+- Submenu pages are registered in ControlPanel.INTEGRATION_PAGES; entries without
+  one still show the "not wired up yet" stub.
+- French strings for the new pages.
+
+Bugs Fixed
+---------------------------
+None.
+
+Features Removed
+----------------
+None.
+
+
+SystemC v1.8.1 Patch Notes
+~-------------------------~
+
+Features Added
+--------------
+- Control panel: new "5. Integrations" tab. Lists integrations and switches each
+  one on or off with a checkbox, saving INTEGRATIONS to .env (restart the bot to
+  apply). Other INTEGRATIONS entries and the rest of .env are left untouched, and
+  "all" is expanded to the explicit list when you switch one off.
+- Integrations are recognised by a new optional PANEL field in the integration
+  file (PANEL = True, or a dict with title / icon / submenu). Files are read, not
+  imported, so an integration shows up even if its libraries aren't installed.
+- Integrations can declare a submenu in PANEL; the tab shows it under a Settings
+  button. Placeholders only: nothing in the submenus is wired up yet.
+- discord_admin declares PANEL with placeholder "Admins" and "Approvals" submenus.
+- Français and AMERICAN strings for the new tab.
+
+Bugs Fixed
+---------------------------
+None.
+
+Features Removed
+----------------
+None.
+
+
+SystemC v1.8.0 Patch Notes
+~-------------------------~
+
+Features Added
+--------------
+- Integrations: drop a Python file into integrations/ to give the agent new
+  tools. Opt-in via INTEGRATIONS=name1,name2 (or "all") in .env. See
+  integrations/README.md and integrations/_example.py. A broken integration is
+  skipped, never fatal.
+- Integration: discord_admin - the agent can create/edit/delete channels and
+  categories, create/edit/delete/assign roles, set channel permission overrides,
+  ban/unban/kick/timeout members, set nicknames, purge/delete/pin messages,
+  create invites and post to other channels.
+    * Only the server owner and DISCORD_ADMIN_USER_IDS get the tools.
+    * Acts only on the server the request came from.
+    * Ban, kick, deletes, purges and powerful-permission grants ask for approval
+      first (DISCORD_ADMIN_CONFIRM=destructive|all|none).
+    * Every action is recorded in the Discord Audit Log with the requester.
+- The platform-verified sender (id + name) is now passed to the agent
+  separately from the message text, for permission checks.
+
+Bugs Fixed
+---------------------------
+None.
+
+Features Removed
+----------------
+None.
+
+
+SystemC v1.7.1 Patch Notes
+~-------------------------~
+
+Features Added
+--------------
+- Inbound messages now carry a sender tag, e.g. "[from: Alice (@alice, id 123)]",
+  on both Discord and Stoat, so the bot can tell people apart in shared channels.
+  The user ID is included because display names can change or be duplicated.
+- The system prompt explains the tag and tells the bot not to echo it back.
+
+Bugs Fixed
+---------------------------
+None.
+
+Features Removed
+----------------
+None.
+
+
+SystemC v1.5.6 Patch Notes
+~-------------------------~
+
+Features Added
+--------------
+- Four Englishes (plus Français) in the language dropdown, in both the control
+  panel and the local web UI:
+    🌐 International  the plain base text
+    🎩 Traditional    a few British touches ("Hang on a mo...", "all sorted")
+    🍁 Canadian       the Traditional words, exactly (we checked: no difference)
+    🦅 AMERICAN       every string, at full volume ("CHOOSE YOUR TRULY AMERICAN
+                      MODEL 🦅🦅🦅🦅🦅", "2. INDEPENDENCE"). Opt-in only.
+- The language is never auto-set to AMERICAN; your OS/browser language only
+  picks Français, Traditional or Canadian (en-GB / en-CA), otherwise International.
+- Window is slightly wider (820px) to fit the longer dropdown.
+
+Bugs Fixed
+---------------------------
+None.
+
+Features Removed
+----------------
+None.
+
+
+SystemC v1.5.5 Patch Notes
+~-------------------------~
+
+Features Added
+--------------
+- Multiple Ollama Cloud API keys with automatic fallback. In the Setup tab you
+  now manage a list of keys (add / remove / ▲ ▼ to reorder; the first is the
+  primary). Keys are tried in order: if one fails with 402 (no usage for the
+  model), 429 (usage limit) or 401/403 (rejected), it is parked for a while and
+  the next key takes over. The primary key is picked up again automatically once
+  its cooldown ends (15 min for 429, 1 h for 402, 24 h for rejected keys).
+- The chat gets a short notice when a switch happens ("API key #1 hit its usage
+  limit — switching to key #2"). Keys are only ever shown as their last 4 chars.
+- Subagents share the same key pool, so a key that failed is skipped everywhere.
+- .env: OLLAMA_API_KEY (primary) + OLLAMA_API_KEYS (comma-separated fallbacks).
+  Hand-edited .env files with just OLLAMA_API_KEY keep working unchanged.
+- If every key is unavailable, the error lists each key's status and when it will
+  be retried.
+- "Fetch available models" and "python providers.py models" try each key until
+  one works.
+
+Bugs Fixed
+---------------------------
+None.
+
+Features Removed
+----------------
+None.
+
+
+SystemC v1.5.4 Patch Notes
+~-------------------------~
+
+Features Added
+--------------
+- Subagents: the agent can now delegate work with spawn_subagent (one task) or
+  spawn_subagents (up to 5 in parallel). Each subagent is a fresh copy with its
+  own context and shell/python/file/web_search tools, and returns a final report
+  to the main agent. They can't message the user or spawn more subagents.
+  Destructive commands from a subagent still need your approval (one prompt at a
+  time, labelled "[subagent: name]").
+  .env options: SUBAGENTS=off (disable), SUBAGENT_MODEL (use a different/cheaper
+  model), SUBAGENT_MAX_PARALLEL (default 3), SUBAGENT_MAX_TURNS (default 12),
+  SUBAGENT_TIMEOUT in seconds (default 600).
+
+Changes
+-------
+- The agent's prompt and tool descriptions no longer say it runs in a "disposable
+  VM"; it is told it's on the owner's own computer. It is also told that files
+  outside its workspace are the owner's real data and not to delete or overwrite
+  them unless asked.
+
+Bugs Fixed
+---------------------------
+None.
+
+Features Removed
+----------------
+None.
+
+
+SystemC v1.5.3 Patch Notes
+~-------------------------~
+
+Bugs Fixed
+---------------------------
+SC-11 - Stoat (and any child process) output never appeared in the control panel's
+        Logs tab: print() is block-buffered when piped. Processes now start
+        unbuffered, so "logged in as ..." and error lines show up live.
+
+SC-12 - The bot's event loop was blocked during model calls and run_python, which
+        caused "heartbeat blocked for more than N seconds" on Discord and could
+        stall Stoat's connection too. Model calls and tools now run in threads.
+
+SC-13 - HTTP 402 from Ollama Cloud ("model not included in your free usage") was
+        a raw traceback and the Discord bot stayed silent. It is now a clear
+        message, shown in chat. Also handles 429 (usage limit). Added a 240s
+        request timeout so a hung call can't wait forever.
+
+SC-14 - Stoat startup/connection errors (e.g. bad token) are now printed.
+
+Features Added
+--------------
+None.
+
+Features Removed
+----------------
+None.
+
+
+SystemC v1.5.2 Patch Notes
+~-------------------------~
+
+Bugs Fixed
+---------------------------
+SC-10 - The control panel's Setup tab was taller than the window with no way to
+        scroll, so the Save button could be unreachable. It now scrolls.
+
+Features Added
+--------------
+- Français: a small language dropdown (🌐 English / 🌐 Français) in the top-right
+  corner of the control panel and of the local web UI. The choice is remembered
+  (UI_LANG in .env for the panel, browser storage for the web UI). The panel
+  defaults to your OS language. Translations live in i18n.py (control panel) and
+  at the top of webui.html (web UI); anything untranslated falls back to English.
+
+Features Removed
+----------------
+None.
+
+
+SystemC v1.5.1 Patch Notes
+~-------------------------~
+
+Bugs Fixed
+---------------------------
+SC-5 - Stoat could not start: a file named platform.py shadowed Python's built-in
+       "platform" module, which broke importing stoat.py (and ollama). It is now
+       chat_platform.py.
+
+SC-6 - Stoat used the wrong stoat.py API (event handler, wait_for, attachments,
+       blocking thread). Rewritten against the real library; it now runs in the
+       same event loop as Discord, or standalone via the control panel.
+
+SC-7 - The control panel's "Stoat bot" Start button launched a file that did
+       nothing. stoat_bot.py is now runnable on its own.
+
+SC-8 - Approval prompts crashed on Stoat (Discord-only code path). Approvals now
+       work in Stoat chat (reply yes/no) and from the control panel Approvals tab.
+
+SC-9 - Saving config from the control panel wiped hand-added .env keys, and
+       demanded a Discord token even for Stoat-only setups.
+
+Features Added
+--------------
+- Ollama Cloud: pick "Ollama Cloud (API key)" in the Setup tab, paste a key from
+  https://ollama.com/settings/keys. No local Ollama / GPU needed.
+- "Fetch available models" button lists the exact model IDs your Ollama (local
+  or cloud) offers. CLI equivalent:  python providers.py models
+- .env: OLLAMA_MODE=local|cloud, OLLAMA_API_KEY=...  ("-cloud"/":cloud" suffixes
+  are stripped automatically for the hosted API).
+
+Features Removed
+----------------
+None.

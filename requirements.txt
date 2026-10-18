@@ -1,0 +1,8 @@
+# Keep this in sync with REQUIRED_PACKAGES in control_panel.py
+discord.py
+fastapi
+uvicorn
+httpx
+ollama
+# Stoat support (pip name "stoat.py", imported as "stoat"):
+stoat.py
