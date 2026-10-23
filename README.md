@@ -16,9 +16,14 @@ mvn -q package -DskipTests     # -> target/systemc-java.jar (fat jar)
 ```bash
 cp example.env .env            # then edit
 java -jar target/systemc-java.jar
-java -cp target/systemc-java.jar systemc.ControlPanel   # Swing control panel
+java -cp target/systemc-java.jar systemc.ControlPanel   # Swing control panel (desktop)
+systemc tui                                            # TUI control panel (SSH / no desktop)
 java -cp target/systemc-java.jar systemc.Providers models   # list Ollama models
+systemc service install        # start the bots at login/boot (systemd user unit)
 ```
+
+The TUI control panel configures the same .env keys as the Swing panel — it runs
+on any TTY or over SSH with no desktop environment (arrow keys + Enter; q backs out).
 
 ## One-liner install / release process
 

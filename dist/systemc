@@ -32,6 +32,7 @@ cmd="${1:-run}"
 case "$cmd" in
   run)     exec "$JAVA_BIN" -jar "$JAR" "$@" ;;
   panel)   shift 2>/dev/null || true; exec "$JAVA_BIN" -cp "$JAR" systemc.ControlPanel ;;
+  tui)     shift 2>/dev/null || true; exec "$JAVA_BIN" -cp "$JAR" systemc.Tui "$@" ;;
   models)  exec "$JAVA_BIN" -cp "$JAR" systemc.Providers models ;;
   version) echo "SystemC Drovex (Java port) — python parity alpha"; echo "jar: $JAR" ;;
   jar)     echo "$JAR" ;;
@@ -116,5 +117,5 @@ case "$ACTION" in
 esac
 SVC
     ;;
-  *) echo "usage: systemc [run|panel|models|service|version]"; exit 1 ;;
+  *) echo "usage: systemc [run|panel|tui|models|service|version]"; exit 1 ;;
 esac
