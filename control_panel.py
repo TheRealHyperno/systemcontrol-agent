@@ -466,6 +466,7 @@ class ControlPanel(tk.Tk):
         self.tab_integrations = tk.Frame(nb, bg=C["bg"])
         self.tab_sessions = tk.Frame(nb, bg=C["bg"])
         self.tab_updates = tk.Frame(nb, bg=C["bg"])
+        self.tab_experiments = tk.Frame(nb, bg=C["bg"])
 
         nb.add(self.tab_profiles, text="0. Profiles")
         nb.add(setup_outer, text="1. Setup")
@@ -476,6 +477,7 @@ class ControlPanel(tk.Tk):
         nb.add(self.tab_integrations, text="5. Integrations")
         nb.add(self.tab_sessions, text="6. Sessions")
         nb.add(self.tab_updates, text="7. Updates")
+        nb.add(self.tab_experiments, text="8. Experiments")
 
         self._build_profiles_tab()
         self._build_setup_tab()
@@ -486,6 +488,7 @@ class ControlPanel(tk.Tk):
         self._build_integrations_tab()
         self._build_sessions_tab()
         self._build_updates_tab()
+        self._build_experiments_tab()
         self._apply_language()
 
         select_nav(0)
@@ -2326,6 +2329,49 @@ class ControlPanel(tk.Tk):
             env["APPROVAL_COMMANDS"] = ",".join(items)
             save_env(env)
             messagebox.showinfo("Saved", "Approval policy saved. Restart the bot to apply.")
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+
+    def _build_experiments_tab(self):
+        f = self.tab_experiments
+        if not hasattr(self, "js_integrations_var"):
+            try:
+                env = load_env()
+                enabled = env.get("JS_INTEGRATIONS_ENABLED", "").lower() in ("1", "true", "yes", "on")
+            except Exception:
+                enabled = False
+            self.js_integrations_var = tk.BooleanVar(value=enabled)
+        tk.Label(f, text="Experiments (unstable)", bg=C["bg"], fg=C["text"],
+                 font=("sans-serif", 11, "bold")).pack(anchor="w", pady=(14, 6))
+        tk.Label(f, text="JavaScript integration support is EXPERIMENTAL and off by default. "
+                          "It is not implemented in the shipped bot yet; enabling it only records "
+                          "your preference. You must install Node.js and the required npm "
+                          "dependencies before anything will run.",
+                 bg=C["bg"], fg=C["subtext"], font=("monospace", 9), wraplength=680,
+                 justify="left").pack(anchor="w", pady=(0, 8))
+        tk.Checkbutton(f, text="Enable JS integrations (experimental)",
+                       variable=self.js_integrations_var, bg=C["bg"], fg=C["text"],
+                       selectcolor=C["panel"]).pack(anchor="w", pady=(0, 8))
+        box = tk.Text(f, height=8, bg=C["panel"], fg=C["text"], relief="flat",
+                      font=("monospace", 9))
+        box.pack(fill="x", pady=(4, 8))
+        box.insert("1.0",
+            "Required dependencies:\n"
+            "  1) Node.js 18+  (nodejs.org or your package manager)\n"
+            "  2) npm install discord.js  (for voice/chat bridges)\n"
+            "  3) ffmpeg (for audio)\n\n"
+            "Status check not available yet.")
+        box.config(state="disabled")
+        tk.Button(f, text="Save", command=self._save_experiments,
+                  bg=C["green"], fg=C["bg"], relief="flat", padx=10, pady=4,
+                  font=("sans-serif", 9, "bold"), cursor="hand2").pack(anchor="w", pady=(6, 0))
+
+    def _save_experiments(self):
+        try:
+            env = load_env()
+            env["JS_INTEGRATIONS_ENABLED"] = "true" if self.js_integrations_var.get() else ""
+            save_env(env)
+            messagebox.showinfo("Saved", "Experiment settings saved. Restart the bot to apply.")
         except Exception as e:
             messagebox.showerror("Error", str(e))
 
