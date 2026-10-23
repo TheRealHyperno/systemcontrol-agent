@@ -12,32 +12,113 @@ Which bots start is determined by which tokens are present in .env:
 Run with: python main.py
 """
 
+from __future__ import annotations
+
 import os
 import sys
 import asyncio
 from pathlib import Path
 
+# Keys a profile owns outright: when running under a profile these are never taken
+# from .env, so a leftover token there can't start a platform the profile turned off.
+_PROFILE_OWNED = {
+    "DISCORD_BOT_TOKEN", "ALLOWED_CHANNEL_IDS", "STOAT_BOT_TOKEN", "STOAT_ALLOWED_CHANNEL_IDS",
+    "OLLAMA_API_KEY", "OLLAMA_API_KEYS", "ANTHROPIC_API_KEY",
+}
 
-def _load_dotenv():
+
+def _unquote(v: str) -> str:
+    v = v.strip()
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+        return v[1:-1]
+    return v
+
+
+def _load_dotenv(skip: set | None = None):
     p = Path(__file__).parent / ".env"
     if not p.exists():
         return False
-    for line in p.read_text().splitlines():
+    for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         k, _, v = line.partition("=")
-        os.environ.setdefault(k.strip(), v.strip())
+        k = k.strip()
+        if skip and k in skip:
+            continue
+        os.environ.setdefault(k, _unquote(v))
     return True
 
 
+def _parse_profile_arg() -> str | None:
+    for i, arg in enumerate(sys.argv):
+        if arg in ("--profile", "-p") and i + 1 < len(sys.argv):
+            return sys.argv[i + 1]
+    return os.environ.get("SYSTEMC_PROFILE_ID")
+
+
+def _apply_profile(prof) -> None:
+    env_dict = prof.to_env_dict()
+    os.environ.update(env_dict)
+    # Integration settings are per profile: this profile's overrides (INTEGRATIONS, DISCORD_ADMIN_USER_IDS, ...)
+    # win over .env, including an override to "" (= back to that setting's default).
+    overrides = {}
+    try:
+        import integration_settings
+        overrides = integration_settings.load_overrides(prof.id)
+    except Exception as e:
+        print(f"⚠️ [profile] Could not read integration settings for '{prof.id}': {e}")
+    os.environ.update(overrides)
+    # Everything else in .env (the API token, settings this profile didn't override, ...)
+    # still applies, except what the profile owns.
+    _load_dotenv(skip=_PROFILE_OWNED | set(env_dict) | set(overrides))
+
+
+def _load_config():
+    profile_id = _parse_profile_arg()
+    if profile_id:
+        try:
+            import profiles
+            prof = profiles.manager.get_profile(profile_id)
+            if prof:
+                _apply_profile(prof)
+                print(f"✨ [profile] Loaded profile: {prof.name} ({prof.id}) | Model: {prof.agent_model}")
+                return True
+            print(f"⚠️ [profile] Specified profile '{profile_id}' not found, falling back to .env")
+        except Exception as e:
+            print(f"⚠️ [profile] Could not load profile '{profile_id}': {e}")
+        if _parse_profile_arg():
+            # Started for a specific profile (by the control panel / API): never fall back to
+            # some other config or pop up the setup wizard.
+            print("Profile could not be loaded; exiting.")
+            sys.exit(1)
+
+    # Standard .env
+    return _load_dotenv()
+
+
 def _check_config():
-    found = _load_dotenv()
+    found = _load_config()
     has_discord = bool(os.environ.get("DISCORD_BOT_TOKEN"))
     has_stoat   = bool(os.environ.get("STOAT_BOT_TOKEN"))
 
     if not found or (not has_discord and not has_stoat):
-        print("No config found — launching setup wizard...")
+        if _parse_profile_arg():
+            print("This profile has no Discord or Stoat token enabled; nothing to start.")
+            sys.exit(1)
+
+        print("No config found — checking for profiles or launching setup wizard...")
+        try:
+            import profiles
+            if profiles.manager.list_profiles():
+                active = profiles.manager.get_active_profile()
+                if active and (active.discord_token or active.stoat_token):
+                    _apply_profile(active)
+                    print(f"✓ Using active profile: {active.name} ({active.id})")
+                    return
+        except Exception:
+            pass
+
         try:
             import tkinter  # noqa
             import subprocess

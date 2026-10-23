@@ -34,11 +34,25 @@ import os
 from datetime import datetime, timedelta
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MEMORY_DIR = os.path.join(BASE_DIR, ".memory")
-DAILY_DIR = os.path.join(MEMORY_DIR, "daily")
-LONG_TERM_PATH = os.path.join(MEMORY_DIR, "MEMORY.md")
 
-os.makedirs(DAILY_DIR, exist_ok=True)
+
+def _get_memory_dir() -> str:
+    profile_id = os.environ.get("SYSTEMC_PROFILE_ID", "").strip()
+    if profile_id and profile_id != "default":      # "default" = the original single-bot folders
+        pdir = os.path.join(BASE_DIR, ".memory", "profiles", profile_id)
+        os.makedirs(os.path.join(pdir, "daily"), exist_ok=True)
+        return pdir
+    os.makedirs(os.path.join(BASE_DIR, ".memory", "daily"), exist_ok=True)
+    return os.path.join(BASE_DIR, ".memory")
+
+
+def _get_daily_dir() -> str:
+    return os.path.join(_get_memory_dir(), "daily")
+
+
+def _get_long_term_path() -> str:
+    return os.path.join(_get_memory_dir(), "MEMORY.md")
+
 
 MAX_DAILY_CHARS = 4000       # per day file, when loading into context
 MAX_LONG_TERM_CHARS = 4000   # MEMORY.md, when loading into context
@@ -46,7 +60,7 @@ MAX_ENTRY_CHARS = 500        # per logged user/agent line
 
 
 def _daily_path(date) -> str:
-    return os.path.join(DAILY_DIR, f"{date.isoformat()}.md")
+    return os.path.join(_get_daily_dir(), f"{date.isoformat()}.md")
 
 
 def _read_capped(path: str, cap: int) -> str:
@@ -72,7 +86,7 @@ def load_context() -> str:
     today = datetime.now().date()
     yesterday = today - timedelta(days=1)
 
-    long_term = _read_capped(LONG_TERM_PATH, MAX_LONG_TERM_CHARS)
+    long_term = _read_capped(_get_long_term_path(), MAX_LONG_TERM_CHARS)
     yesterday_log = _read_capped(_daily_path(yesterday), MAX_DAILY_CHARS)
     today_log = _read_capped(_daily_path(today), MAX_DAILY_CHARS)
 
@@ -119,7 +133,7 @@ def remember(fact: str) -> dict:
         return {"error": "empty fact — nothing to remember"}
     date = datetime.now().strftime("%Y-%m-%d")
     try:
-        with open(LONG_TERM_PATH, "a") as f:
+        with open(_get_long_term_path(), "a") as f:
             f.write(f"- [{date}] {fact}\n")
         return {"remembered": fact}
     except Exception as e:

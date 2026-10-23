@@ -42,6 +42,13 @@ try:
 except Exception as e:
     print(f"[api] integrations API not loaded: {type(e).__name__}: {e}", flush=True)
 
+# Profiles & Multi-Instance API (/api/v1/profiles/...)
+try:
+    import profiles_api
+    app.include_router(profiles_api.build_router())
+except Exception as e:
+    print(f"[api] profiles API not loaded: {type(e).__name__}: {e}", flush=True)
+
 
 # ── Serve the UI ─────────────────────────────────────────────────────────────
 @app.get("/", response_class=HTMLResponse)

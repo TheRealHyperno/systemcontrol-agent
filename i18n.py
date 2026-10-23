@@ -13,11 +13,11 @@ import os
 import locale
 
 LANG_NAMES = {
-    "en":    "🌐 International",
-    "en-GB": "🎩 Traditional",
-    "en-CA": "🍁 Canadian",
-    "en-US": "🦅 AMERICAN",
-    "fr":    "🌐 Français",
+    "en":    "International",
+    "en-GB": "Traditional",
+    "en-CA": "Canadian",
+    "en-US": "AMERICAN",
+    "fr":    "Français",
 }
 _lang = "en"
 
@@ -453,3 +453,25 @@ _EN_US = {
 TRANSLATIONS["en-GB"] = _EN_GB
 TRANSLATIONS["en-CA"] = _EN_GB      # Canadian: literally the UK words (see above)
 TRANSLATIONS["en-US"] = _EN_US
+
+
+# ── emoji-free twins ─────────────────────────────────────────────────────────
+# The control panel shows its labels without emoji (except on the Integrations tab).
+# Every translation whose English text contains an emoji also gets a twin without it,
+# so those labels stay translated.
+import re as _re
+
+_EMOJI = _re.compile("(?![✓✗★])[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\u2194-\u21AA\u2300-\u23FF\uFE0F\u200D]+[ \u00a0]*")
+
+
+def _without_emoji(text: str) -> str:
+    return _EMOJI.sub("", text).strip()
+
+
+for _table in TRANSLATIONS.values():
+    for _k, _v in list(_table.items()):
+        _nk = _without_emoji(_k)
+        if _nk and _nk != _k and _nk not in _table:
+            _table[_nk] = _without_emoji(_v)
+        elif _nk == _k:                      # plain label whose translation adds emoji (en-US jokes)
+            _table[_k] = _without_emoji(_v)

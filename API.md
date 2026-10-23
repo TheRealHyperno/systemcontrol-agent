@@ -54,6 +54,13 @@ Errors use FastAPI's standard shape, `{"detail": "human-readable message"}`:
 An integration is listed here when its file declares a `PANEL` field (the same rule as the control
 panel). Names are the file names in `integrations/` without `.py`.
 
+Integration routes (list, get, `enabled`, `settings`) take an optional `?profile=<id>` query parameter to
+read or change **that profile's** settings instead of the global `.env` (a profile's own values are
+overrides; anything it hasn't set follows the global ones). Unknown profile id → 404.
+Profiles also have personalization fields you can send to `POST /profiles`: `bot_name`, `gender`,
+`pronouns`, `system_prompt` (`""` = built-in default; variables `{NAME}` `{GENDER}` `{PRONOUNS}`
+`{MODEL}` `{SOURCE}` `{VERSION}`).
+
 ### `GET /integrations`
 
 ```json
@@ -294,6 +301,25 @@ These become `GET`/`PUT /api/v1/integrations/my_thing/greeting`. The whole real 
 
 Custom endpoints don't create a control-panel page by themselves: declare `fields` for a generated
 page, or add a drawer to `ControlPanel.INTEGRATION_PAGES` in `control_panel.py` (see `integrations/README.md`).
+
+## Profiles (multi-bot) endpoints
+
+Same token, same `Authorization: Bearer <SYSTEMC_API_TOKEN>` header. Handled by `profiles_api.py`.
+
+| Method | Path | What it does |
+|---|---|---|
+| GET | `/api/v1/profiles` | All profiles + which are running |
+| GET | `/api/v1/profiles/{id}` | One profile |
+| POST | `/api/v1/profiles` | Create a profile, or update the one with that `id` (only the fields you send change) |
+| DELETE | `/api/v1/profiles/{id}` | Delete (not `default`, not while running) |
+| POST | `/api/v1/profiles/{id}/start` · `/stop` | Start / stop that bot instance |
+| POST | `/api/v1/profiles/{id}/install_deps` | pip-install the profile's dependencies |
+| POST | `/api/v1/profiles/migrate` | Import the legacy `.env` (body: `{"target_id": "default"}`; only `.env*` files inside the SystemC folder) |
+| GET | `/api/v1/profiles/{id}/logs?limit=100` | Recent log lines |
+
+Profile ids are `a-z`, `0-9`, `_` and `-` (1-40 characters). Bot tokens and API keys are never returned:
+they come back as `{"set": true}`. When updating, leave a credential out (or send the masked object back)
+to keep it, send a string to replace it, or `""` to clear it.
 
 ## Security notes
 

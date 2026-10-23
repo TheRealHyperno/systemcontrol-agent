@@ -148,6 +148,56 @@ def no_switch_message(user: str) -> str:
 
 # ── one-time privileged setup ────────────────────────────────────────────────
 
+_AGENT_ACCESS_SNIPPET = r"""
+# Let AGENT use the app folder even when it lives in someone else's home
+# (e.g. /home/<you>/SystemC): traverse the parent folders, read/write the folder.
+if [ "$(stat -c %U "$DIR")" != "$AGENT" ]; then
+    p=$(dirname "$DIR")
+    while [ "$p" != "/" ] && [ -n "$p" ]; do
+        [ $(( $(stat -c %a "$p") % 10 & 1 )) -eq 0 ] && setfacl -m "u:$AGENT:--x" "$p"
+        p=$(dirname "$p")
+    done
+    setfacl -R -m "u:$AGENT:rwX" "$DIR"
+    find "$DIR" -type d -exec setfacl -d -m "u:$AGENT:rwX" {} +
+fi
+"""
+
+
+def _access_script(user: str, app_dir: str) -> str:
+    u, d = shlex.quote(user), shlex.quote(app_dir)
+    return (f"set -e\nAGENT={u}\nDIR={d}\n"
+            'command -v setfacl >/dev/null 2>&1 || { echo "setfacl not found - install it with: sudo apt install acl" >&2; exit 3; }\n'
+            + _AGENT_ACCESS_SNIPPET)
+
+
+def can_access(user: str, app_dir: str) -> bool:
+    """Can `user` actually read/run/write the app folder? (False => the bot would
+    die with 'Permission denied' the moment it starts.)"""
+    if not needs_switch(user):
+        return True
+    try:
+        r = subprocess.run(
+            wrap_command(["sh", "-c",
+                          'test -r "$0/bot.py" && test -x "$0" && test -w "$0" && { [ ! -e "$0/.env" ] || { test -r "$0/.env" && test -w "$0/.env"; }; }', app_dir], user),
+            capture_output=True, timeout=10)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def grant_agent_access(user: str, app_dir: str) -> Tuple[bool, str]:
+    """Give `user` access to the app folder using only *our own* rights (works
+    when this account owns the folder -- no password needed)."""
+    if IS_WINDOWS or not valid_username(user):
+        return False, "Not supported here."
+    try:
+        r = subprocess.run(["bash", "-c", _access_script(user, os.path.abspath(app_dir))],
+                           capture_output=True, text=True, timeout=120)
+    except Exception as e:
+        return False, str(e)
+    return r.returncode == 0, (r.stderr or r.stdout).strip()
+
+
 def _grant_script(user: str, panel_user: str, app_dir: str) -> str:
     u, p, d = shlex.quote(user), shlex.quote(panel_user), shlex.quote(app_dir)
     rule_file = shlex.quote(f"/etc/sudoers.d/systemc-runas-{user}")
@@ -174,6 +224,7 @@ while [ "$p" != "/" ] && [ -n "$p" ]; do
 done
 setfacl -R -m "u:$PANEL:rwX" "$DIR"
 find "$DIR" -type d -exec setfacl -d -m "u:$PANEL:rwX" {{}} +
+{_AGENT_ACCESS_SNIPPET}
 echo "ok"
 """
 

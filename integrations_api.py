@@ -4,7 +4,7 @@ does, for scripts and other programs. Mounted by webui_server.py at /api/v1
 (so http://127.0.0.1:7842/api/v1/...). Full reference: API.md.
 
     GET  /api/v1/ping
-    GET  /api/v1/integrations
+    GET  /api/v1/integrations                        (add ?profile=<id> for one profile's settings)
     GET  /api/v1/integrations/{name}
     PUT  /api/v1/integrations/{name}/enabled        {"enabled": true}
     GET  /api/v1/integrations/{name}/settings        declared settings + current values
@@ -25,7 +25,8 @@ from __future__ import annotations
 
 import hmac
 import importlib
-from typing import Any
+import os
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -73,6 +74,19 @@ def require_token(request: Request) -> None:
 
 # ── routes ───────────────────────────────────────────────────────────────────
 
+def _scope(profile: Optional[str]) -> Optional[str]:
+    """?profile=<id> -> that profile's settings file (None = the global .env). 404 if there is no such profile."""
+    if not profile:
+        return None
+    try:
+        path = settings.profile_env_path(profile)
+    except settings.SettingsError as e:
+        raise bad_request(e)
+    if not os.path.exists(os.path.join(settings.PROFILES_DIR, profile + ".json")):
+        raise HTTPException(404, f"no profile named {profile!r}")
+    return path
+
+
 def _row(row: dict) -> dict:
     return {**row, "has_api": integrations.declares(row["name"], "api_router"),
             "has_settings": any(i["fields"] for i in row["submenu"])}
@@ -86,23 +100,23 @@ def build_router() -> APIRouter:
         return {"ok": True}
 
     @router.get("/integrations")
-    async def list_integrations():
-        return {"integrations": [_row(r) for r in settings.list_integrations()]}
+    async def list_integrations(profile: Optional[str] = None):
+        return {"integrations": [_row(r) for r in settings.list_integrations(_scope(profile))]}
 
     @router.get("/integrations/{name}")
-    async def get_integration(name: str):
+    async def get_integration(name: str, profile: Optional[str] = None):
         try:
-            return _row(settings.get_integration(name))
+            return _row(settings.get_integration(name, _scope(profile)))
         except KeyError:
             raise HTTPException(404, f"no integration named {name!r} (or it opted out with PANEL = False)")
 
     @router.put("/integrations/{name}/enabled")
-    async def set_enabled(name: str, request: Request):
+    async def set_enabled(name: str, request: Request, profile: Optional[str] = None):
         body = await json_body(request)
         if not isinstance(body.get("enabled"), bool):
             raise HTTPException(400, 'body must be {"enabled": true} or {"enabled": false}')
         try:
-            return changed(**_row(settings.set_enabled(name, body["enabled"])))
+            return changed(**_row(settings.set_enabled(name, body["enabled"], _scope(profile))))
         except KeyError:
             raise HTTPException(404, f"no integration named {name!r} (or it opted out with PANEL = False)")
 
@@ -120,19 +134,19 @@ def build_router() -> APIRouter:
     # Generic settings for any integration that declares PANEL "fields". Registered after the
     # loop above, so an integration that defines its own /settings route wins.
     @router.get("/integrations/{name}/settings")
-    async def get_settings(name: str):
+    async def get_settings(name: str, profile: Optional[str] = None):
         try:
-            return settings.get_settings(name)
+            return settings.get_settings(name, _scope(profile))
         except KeyError:
             raise HTTPException(404, f"no integration named {name!r}")
 
     @router.put("/integrations/{name}/settings")
-    async def put_settings(name: str, request: Request):
+    async def put_settings(name: str, request: Request, profile: Optional[str] = None):
         values = (await json_body(request)).get("values")
         if not isinstance(values, dict) or not values:
             raise HTTPException(400, 'body must be {"values": {"MY_KEY": "value", ...}}')
         try:
-            return changed(**settings.set_settings(name, values))
+            return changed(**settings.set_settings(name, values, _scope(profile)))
         except KeyError:
             raise HTTPException(404, f"no integration named {name!r}")
         except settings.SettingsError as e:

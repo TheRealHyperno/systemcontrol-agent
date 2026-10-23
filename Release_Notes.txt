@@ -1,8 +1,45 @@
 SystemC (next) Patch Notes
 ~-------------------------~
 
+Fixes
+-----
+- Fixed a control panel crash on start (KeyError: 'required') when any integration declares settings
+  "fields". The field validator (integrations.normalize_fields) had been dropped from this build;
+  it, integrations.coerce() and integrations.get_setting() are back.
+- Restored the full integrations package: discord_admin has all 26 tools and approval prompts again
+  (the build shipped a 61-line stub), plus _discord_admin_api.py, _example.py, integrations/README.md,
+  the integration runtime (handle/available/status/enabled_names, ctx.confirm/raw_channel),
+  and install.sh / install.bat.
+- Updater no longer overwrites .profiles/ (bot tokens and API keys live there), and the release
+  zip no longer ships a .profiles/ folder.
+- The "default" profile keeps using the original .memory/, .history/ and workspace/ folders, so a
+  migrated single-bot install doesn't lose its memory and chat history. Other profiles stay isolated.
+- Profile bots now also read the rest of .env (integration settings such as DISCORD_ADMIN_USER_IDS,
+  the API token); a profile still owns its tokens and keys, and a leftover .env token can no longer
+  start a platform that the profile turned off.
+- A profile bot started from the Profiles tab / API could freeze once ~1000 log lines piled up
+  unread. Logs are now a bounded buffer, shown in the control panel's log box, and bots started
+  from the Profiles tab are stopped when the control panel closes.
+- Auto-restart gives up after 5 crashes in 5 minutes instead of restarting every 3 seconds forever.
+- Profile ids are validated (a-z, 0-9, _ and -). Before, an id like "../x_" could write files outside
+  .profiles/ and the New Profile dialog could silently overwrite an existing profile.
+- Profiles API: now requires the API token like the rest of /api/v1; credentials are masked in
+  responses; updates only change the fields sent (a partial update used to reset everything else,
+  including tokens); /migrate only reads .env files inside the SystemC folder; dependency entries
+  that look like pip options (e.g. --index-url) are rejected; profile files are written owner-only.
+- AGENT_MAX_TURNS (default 20) caps tool-call rounds per message again; it had been set to 9999.
+- The "swear in every message and insult the user" line is no longer in the default system prompt.
+  Set AGENT_CASUAL_TONE=1 in .env to turn it on.
+- run_shell tool text now tells the agent to redirect output when backgrounding with &.
+
 Features Added
 --------------
+- Run-as-another-user now fixes folder access by itself: if the agent account cannot read or
+  write the SystemC folder (for example it lives in your home folder), the control panel grants
+  it access automatically before starting the bot, so no more "Permission denied" crash loop.
+  No password is needed when your account owns the folder; otherwise it asks for your sudo
+  password once. Saving settings (which recreates .env owner-only) no longer locks the agent out
+  of .env either: access is re-checked and re-granted on every start/restart.
 - New "7. Updates" tab and updater.py: check a GitHub repo's releases and install the newest
   SystemC from inside the control panel (or with `python updater.py update`). The new code is
   syntax-checked before install, overwritten files are backed up to .backups/, and "Roll back last

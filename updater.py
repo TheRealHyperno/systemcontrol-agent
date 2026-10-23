@@ -17,7 +17,7 @@ What an update does
      the new files in. If that fails part-way, the backup is restored.
   5. Re-runs pip if requirements.txt changed.
 
-Never touched by an update: .env, .memory/, .history/, .approvals/, workspace/,
+Never touched by an update: .env, .profiles/, .memory/, .history/, .approvals/, workspace/,
 venv/, .backups/ and files the release doesn't contain (your own integrations
 are safe). Files the release DOES contain are overwritten, so local edits to
 those are replaced; the backup keeps the old copies.
@@ -26,7 +26,7 @@ Command line:
     python updater.py check    [--repo owner/repo] [--pre]
     python updater.py update   [--repo owner/repo] [--pre]
     python updater.py rollback
-The repo defaults to UPDATE_REPO in .env.
+The repo defaults to UPDATE_REPO in .env (or TheRealHyperno/systemcontrol-agent if unset).
 """
 
 import hashlib
@@ -54,10 +54,11 @@ USER_AGENT = "SystemC-Updater"
 
 # First path component of anything an update must never write to.
 PROTECTED_TOP = {
-    ".env", ".memory", ".history", ".approvals", BACKUP_NAME, STATE_NAME,
+    ".env", ".profiles", ".memory", ".history", ".approvals", BACKUP_NAME, STATE_NAME,
     "workspace", "venv", ".venv", ".git", "__pycache__", ".idea", ".vscode",
 }
 _ALLOWED_HOSTS = ("github.com", "githubusercontent.com")
+DEFAULT_REPO = "TheRealHyperno/systemcontrol-agent"   # used when UPDATE_REPO is not set
 _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 
@@ -495,7 +496,7 @@ def _env_value(key: str) -> str:
 def main(argv) -> int:
     args = list(argv)
     cmd = args.pop(0) if args else "check"
-    repo = _env_value("UPDATE_REPO")
+    repo = _env_value("UPDATE_REPO") or DEFAULT_REPO
     pre = _env_value("UPDATE_PRERELEASE").lower() in ("1", "on", "true", "yes")
     if "--repo" in args:
         repo = args[args.index("--repo") + 1]

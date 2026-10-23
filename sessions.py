@@ -30,8 +30,19 @@ import re
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-HISTORY_DIR = os.path.join(HERE, ".history")
-os.makedirs(HISTORY_DIR, exist_ok=True)
+
+
+def get_history_dir() -> str:
+    profile_id = os.environ.get("SYSTEMC_PROFILE_ID", "").strip()
+    if profile_id and profile_id != "default":      # "default" = the original single-bot folders
+        pdir = os.path.join(HERE, ".history", "profiles", profile_id)
+        os.makedirs(pdir, exist_ok=True)
+        return pdir
+    os.makedirs(os.path.join(HERE, ".history"), exist_ok=True)
+    return os.path.join(HERE, ".history")
+
+
+HISTORY_DIR = get_history_dir()
 
 _KEY_RE = re.compile(r"^(discord|stoat):([A-Za-z0-9_-]{1,64})$")
 _FROM_TAG_RE = re.compile(r"^\[from: [^\]]*\]\s*")
@@ -64,7 +75,7 @@ def key_for(channel) -> "str | None":
 def _path(key: str, ext: str = ".json") -> str:
     platform, cid = parse_key(key)
     stem = cid if platform == "discord" else f"{platform}_{cid}"
-    return os.path.join(HISTORY_DIR, stem + ext)
+    return os.path.join(get_history_dir(), stem + ext)
 
 
 def _key_from_stem(stem: str) -> "str | None":
@@ -221,8 +232,9 @@ def list_sessions() -> "list[dict]":
     """Every saved session, most recently active first. Each is
     {key, platform, channel_id, label, turns, last_active, preview}."""
     out = []
+    hist_dir = get_history_dir()
     try:
-        names = os.listdir(HISTORY_DIR)
+        names = os.listdir(hist_dir)
     except OSError:
         return out
     for name in names:
@@ -233,7 +245,7 @@ def list_sessions() -> "list[dict]":
             continue
         platform, cid = parse_key(key)
         try:
-            mtime = os.path.getmtime(os.path.join(HISTORY_DIR, name))
+            mtime = os.path.getmtime(os.path.join(hist_dir, name))
         except OSError:
             continue
         history = load(key)

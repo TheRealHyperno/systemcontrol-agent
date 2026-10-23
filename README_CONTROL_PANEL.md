@@ -30,7 +30,7 @@ If the agent directory does not exist yet (or if the separate user hasn't been c
 
 ## Updates tab
 
-Tab **7. Updates** checks a GitHub repo's releases for a newer SystemC and installs it.
+The **Updates** tab checks a GitHub repo's releases for a newer SystemC and installs it.
 
 1. Enter the source as `owner/repo` (or paste the github.com link) and press **Check for updates**.
    Tick **Include pre-releases** to follow betas too. The source is saved as `UPDATE_REPO`
@@ -58,12 +58,45 @@ install folder or symlinks are refused, and the agent itself has no tool to trig
 GitHub allows 60 unauthenticated API requests per hour per IP, which is plenty for manual checks.
 The same thing is available from a terminal: `python updater.py check|update|rollback`.
 
-## Agent name and version
+## Personalization tab (name, gender, pronouns, system prompt)
 
-The Setup tab has an **Agent name** field. It is saved as `AGENT_NAME` in `.env` and written
-into the "Who you are" section of the system prompt (blank = `SystemC`). Restart the bot to apply.
-The SystemC revision shown in that section (and in every startup banner and the installers) comes from
-`version.py`; edit `SYSTEMC_VERSION` / `SYSTEMC_STAGE` there once per release. The model name is filled in from `AGENT_MODEL` automatically.
+Every profile has its own **Personalization** tab settings. Restart that profile's bot to apply changes.
+
+- **Bot name** — what the agent calls itself (blank = the profile's name).
+- **Gender** and **Pronouns** — plain text boxes, so anything works: `female`, `Gender Non-Conforming`,
+  `he/him`, `xe/xer`. Blank means "not specified".
+- **System prompt** — the box is pre-filled with the full default prompt. Edit it to fine-tune, or
+  replace it entirely. A profile that still has the default stores nothing, so it keeps following the
+  built-in prompt when SystemC is updated; **Reset to default prompt** gets you back there.
+  **Preview** shows exactly what the model will see.
+
+Variables you can put in the prompt (click one to insert it at the cursor):
+
+| Variable | Becomes |
+|---|---|
+| `{NAME}` | the agent's name |
+| `{GENDER}` / `{PRONOUNS}` | exactly what you typed (`not specified` if blank) |
+| `{MODEL}` | the LLM model, e.g. `gpt-oss:120b` |
+| `{SOURCE}` | `Ollama Cloud`, `Ollama (local)` or `Anthropic` |
+| `{VERSION}` | the SystemC release name, e.g. `Drovex (beta)` |
+
+Only these exact uppercase tokens are replaced; other braces in your prompt are left alone. Integration
+tool descriptions and memory are appended after your prompt automatically. In `.env` / the profile these
+are `AGENT_NAME`, `AGENT_GENDER`, `AGENT_PRONOUNS` and `AGENT_SYSTEM_PROMPT`. The default text lives in
+`prompt_template.py`. The SystemC revision comes from `version.py` (`SYSTEMC_VERSION` / `SYSTEMC_STAGE`).
+
+Note: the Run & Logs tab starts the single legacy bot from `.env`; profiles started from the Profiles
+tab (or the API) are the ones that use Personalization and per-profile integration settings.
+
+## Integrations are per profile
+
+The Integrations tab has an **Editing settings for** selector: the active profile, or **Global defaults**.
+
+- Which integrations are on, and every integration setting, can differ per profile. They are stored as
+  overrides in `.profiles/<id>.integrations.env`.
+- Anything a profile hasn't changed follows the Global defaults (`.env`), so shared settings only need
+  setting once. Changing a setting in a profile never touches `.env` or other profiles.
+- Profiles that used the older "integrations" list keep their enabled integrations until you change them.
 
 ## Subagents
 
