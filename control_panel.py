@@ -19,17 +19,20 @@ import subprocess
 import urllib.request
 import webbrowser
 import tkinter as tk
-from tkinter import ttk, messagebox, scrolledtext
+from tkinter import ttk, messagebox, scrolledtext, filedialog
 
 import approvals as approvals_store
 import i18n
 import integrations
 import integration_settings as settings
+import prompt_template
 import sessions
 import account_setup
 import runas
 import updater
 import version
+import profiles
+import profile_transfer
 from integrations import _discord_admin_settings as das
 from i18n import tr
 
@@ -135,6 +138,10 @@ class ManagedProcess:
             return list(self.args), None
         if not runas.can_switch(user):
             return None, runas.no_switch_message(user)
+        if not runas.can_access(user, APP_DIR):
+            # e.g. saving .env recreates it owner-only and drops the agent's ACL entry.
+            # Re-grant (no password needed when this account owns the folder).
+            runas.grant_agent_access(user, APP_DIR)
         py, warning = runas.resolve_python(user)
         if warning:
             self.log_queue.put((self.name, f"[warning] {warning}\n"))
@@ -235,7 +242,7 @@ class ControlPanel(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("systemc control panel")  # translated in _apply_language
-        self.geometry("820x640")
+        self.geometry("980x680")
         self.configure(bg=C["bg"])
 
         self.log_queue: queue.Queue = queue.Queue()
@@ -251,13 +258,17 @@ class ControlPanel(tk.Tk):
                                           run_as=self._run_as_user)
 
         # ── state vars, seeded from existing .env if present ──
+        # Which profile the Setup tab is currently editing. None = it was filled from the
+        # global .env, so Save writes .env; set by _load_profile_into_ui so Save writes
+        # that profile instead of leaking its values into the global .env.
+        self._setup_pid = None
         self.token_var = tk.StringVar(value=env.get("DISCORD_BOT_TOKEN", ""))
         self.channels_var = tk.StringVar(value=env.get("ALLOWED_CHANNEL_IDS", ""))
         self.mode_var = tk.StringVar(value=env.get("BOT_MODE", "WAKEWORD"))
         self.wake_var = tk.StringVar(value=env.get("WAKE_WORD", "hey claw"))
         self.model_var = tk.StringVar(value=env.get("AGENT_MODEL", "llama3.2"))
         self.agent_name_var = tk.StringVar(value=env.get("AGENT_NAME", ""))
-        self.update_repo_var = tk.StringVar(value=env.get("UPDATE_REPO", ""))
+        self.update_repo_var = tk.StringVar(value=env.get("UPDATE_REPO", "") or updater.DEFAULT_REPO)
         self.update_pre_var = tk.BooleanVar(
             value=env.get("UPDATE_PRERELEASE", "").lower() in ("1", "on", "true", "yes"))
         self._update_info = None
@@ -314,9 +325,9 @@ class ControlPanel(tk.Tk):
     # ── layout ───────────────────────────────────────────────────────────────
 
     def _build_ui(self):
-        hdr = tk.Frame(self, bg=C["panel"], pady=12)
+        hdr = tk.Frame(self, bg=C["panel"], pady=8)
         hdr.pack(fill="x")
-        tk.Label(hdr, text="🦞  systemc control panel", font=("monospace", 16, "bold"),
+        tk.Label(hdr, text="systemc control panel", font=("monospace", 13, "bold"),
                   bg=C["panel"], fg=C["text"]).pack()
         # Language dropdown, small, top-right corner
         self.lang_combo = ttk.Combobox(hdr, state="readonly", width=15,
@@ -327,22 +338,94 @@ class ControlPanel(tk.Tk):
 
         style = ttk.Style(self)
         style.theme_use("default")
-        style.configure("TNotebook", background=C["bg"], borderwidth=0)
-        style.configure("TNotebook.Tab", background=C["panel"], foreground=C["text"],
-                         padding=(14, 8))
-        style.map("TNotebook.Tab", background=[("selected", C["accent"])],
-                   foreground=[("selected", C["bg"])])
+        # The sidebar is the navigation, so the notebook's own tab strip is
+        # hidden (empty tab layout); nb.select()/nb.index() still work.
+        style.layout("Hidden.TNotebook.Tab", [])
+        style.configure("Hidden.TNotebook", background=C["bg"], borderwidth=0,
+                         tabmargins=0, padding=0)
         style.configure("Treeview", background=C["panel"], fieldbackground=C["panel"],
                          foreground=C["text"], borderwidth=0)
         style.configure("Treeview.Heading", background=C["panel2"], foreground=C["text"])
         style.map("Treeview", background=[("selected", C["accent"])],
                    foreground=[("selected", C["bg"])])
 
-        nb = ttk.Notebook(self)
-        self.nb = nb
-        nb.pack(fill="both", expand=True, padx=10, pady=10)
+        # Main layout: Claude-style left sidebar + right content
+        main_pane = tk.Frame(self, bg=C["bg"])
+        main_pane.pack(fill="both", expand=True)
 
-        # The Setup tab is taller than the window, so it lives in a scrollable canvas
+        # ── Left Claude-style Sidebar ──
+        self.sidebar = tk.Frame(main_pane, bg="#181820", width=190)
+        self.sidebar.pack(side="left", fill="y", padx=(6, 0), pady=6)
+        self.sidebar.pack_propagate(False)
+
+        # Profile Switcher in Sidebar Top
+        prof_box = tk.Frame(self.sidebar, bg="#24242e", padx=8, pady=8)
+        prof_box.pack(fill="x", padx=6, pady=(6, 10))
+        tk.Label(prof_box, text="ACTIVE PROFILE", font=("sans-serif", 8, "bold"), bg="#24242e", fg=C["accent"]).pack(anchor="w")
+        
+        self.sidebar_prof_combo = ttk.Combobox(prof_box, state="readonly", width=18)
+        self.sidebar_prof_combo.pack(fill="x", pady=(4, 0))
+        self._refresh_sidebar_profiles()
+        self.sidebar_prof_combo.bind("<<ComboboxSelected>>", self._on_sidebar_profile_select)
+
+        self.sidebar_nav_btns = {}
+        nav_labels = [
+            ("Profiles", 0),
+            ("Setup", 1),
+            ("Personalization", 2),
+            ("Dependencies", 3),
+            ("Run & Logs", 4),
+            ("Approvals", 5),
+            ("Integrations", 6),
+            ("Sessions", 7),
+            ("Updates", 8),
+        ]
+        nav_items = [(text, text, idx) for text, idx in nav_labels]
+
+        def select_nav(idx):
+            self.nb.select(idx)
+            for k, btn in self.sidebar_nav_btns.items():
+                if k == idx:
+                    btn.config(bg=C["accent"], fg=C["bg"], activebackground=C["accent"],
+                               font=("sans-serif", 10, "bold"))
+                else:
+                    btn.config(bg="#181820", fg=C["text"], activebackground=C["panel"],
+                               font=("sans-serif", 10))
+
+        for key, text, idx in nav_items:
+            b = tk.Button(
+                self.sidebar, text=text, anchor="w", padx=10, pady=7,
+                bg="#181820", fg=C["text"], relief="flat", cursor="hand2",
+                borderwidth=0, highlightthickness=0, activeforeground=C["text"],
+                command=lambda i=idx: select_nav(i)
+            )
+            b.pack(fill="x", padx=6, pady=1)
+            self.sidebar_nav_btns[idx] = b
+            b.bind("<Enter>", lambda _e, i=idx, w=b: w.config(bg=C["panel"]) if self.nb.index("current") != i else None)
+            b.bind("<Leave>", lambda _e, i=idx, w=b: w.config(bg="#181820") if self.nb.index("current") != i else None)
+
+        # Bot status at bottom of sidebar
+        sidebar_bottom = tk.Frame(self.sidebar, bg="#181820")
+        sidebar_bottom.pack(side="bottom", fill="x", padx=6, pady=8)
+
+        self.sidebar_running_lbl = tk.Label(
+            sidebar_bottom, text="Bots Active: 0", font=("monospace", 8),
+            bg="#24242e", fg=C["green"], pady=4
+        )
+        self.sidebar_running_lbl.pack(fill="x")
+
+        # Right container for notebook
+        content_box = tk.Frame(main_pane, bg=C["bg"])
+        content_box.pack(side="right", fill="both", expand=True, padx=(6, 6), pady=6)
+
+        nb = ttk.Notebook(content_box, style="Hidden.TNotebook")
+        self.nb = nb
+        nb.pack(fill="both", expand=True)
+
+        # Tab 0: Profiles & Instances
+        self.tab_profiles = tk.Frame(nb, bg=C["bg"])
+
+        # Tab 1: Setup
         setup_outer = tk.Frame(nb, bg=C["bg"])
         setup_canvas = tk.Canvas(setup_outer, bg=C["bg"], highlightthickness=0)
         setup_bar = ttk.Scrollbar(setup_outer, orient="vertical", command=setup_canvas.yview)
@@ -374,13 +457,17 @@ class ControlPanel(tk.Tk):
 
         setup_canvas.bind("<Enter>", _bind_wheel)
         setup_canvas.bind("<Leave>", _unbind_wheel)
+        self.tab_personal = tk.Frame(nb, bg=C["bg"])
         self.tab_deps = tk.Frame(nb, bg=C["bg"])
         self.tab_run = tk.Frame(nb, bg=C["bg"])
         self.tab_approvals = tk.Frame(nb, bg=C["bg"])
         self.tab_integrations = tk.Frame(nb, bg=C["bg"])
         self.tab_sessions = tk.Frame(nb, bg=C["bg"])
         self.tab_updates = tk.Frame(nb, bg=C["bg"])
+
+        nb.add(self.tab_profiles, text="0. Profiles")
         nb.add(setup_outer, text="1. Setup")
+        nb.add(self.tab_personal, text="Personalization")
         nb.add(self.tab_deps, text="2. Dependencies")
         nb.add(self.tab_run, text="3. Run && Logs")
         nb.add(self.tab_approvals, text="4. Approvals")
@@ -388,7 +475,9 @@ class ControlPanel(tk.Tk):
         nb.add(self.tab_sessions, text="6. Sessions")
         nb.add(self.tab_updates, text="7. Updates")
 
+        self._build_profiles_tab()
         self._build_setup_tab()
+        self._build_personalization_tab()
         self._build_deps_tab()
         self._build_run_tab()
         self._build_approvals_tab()
@@ -396,6 +485,9 @@ class ControlPanel(tk.Tk):
         self._build_sessions_tab()
         self._build_updates_tab()
         self._apply_language()
+
+        select_nav(0)
+        self.nb.bind("<<NotebookTabChanged>>", lambda e: select_nav(self.nb.index("current")))
 
     # ── language ────────────────────────────────────────────────────────────
 
@@ -443,6 +535,568 @@ class ControlPanel(tk.Tk):
         if hasattr(self, "ollama_status_lbl"):
             self._refresh_ollama_status()
 
+    # ── profiles & multi-instance management ───────────────────────────────
+
+    def _refresh_sidebar_profiles(self):
+        try:
+            profs = profiles.manager.list_profiles()
+            active = profiles.manager.get_active_profile()
+            values = [f"{p.name} ({p.id})" for p in profs]
+            if hasattr(self, "sidebar_prof_combo"):
+                self.sidebar_prof_combo["values"] = values
+                if active:
+                    self.sidebar_prof_combo.set(f"{active.name} ({active.id})")
+        except Exception:
+            pass
+
+    def _on_sidebar_profile_select(self, _e=None):
+        sel = self.sidebar_prof_combo.get()
+        if not sel or "(" not in sel:
+            return
+        pid = sel.split("(")[-1].rstrip(")")
+        self._switch_to_profile(pid)
+
+    def _switch_to_profile(self, profile_id: str):
+        profiles.manager.set_active_profile(profile_id)
+        prof = profiles.manager.get_profile(profile_id)
+        if prof:
+            self._load_profile_into_ui(prof)
+            self._sync_run_tab_to_profile()
+            self._refresh_sidebar_profiles()
+            if hasattr(self, "_refresh_profiles_list"):
+                self._refresh_profiles_list()
+            if hasattr(self, "int_scope_combo"):
+                self._refresh_int_scope_choices()
+                self._refresh_integrations()
+
+    def _load_profile_into_ui(self, p):
+        self._setup_pid = p.id
+        self.token_var.set(p.discord_token)
+        self.channels_var.set(p.discord_channels)
+        self.mode_var.set(p.discord_bot_mode)
+        self.wake_var.set(p.discord_wake_word)
+        self.model_var.set(p.agent_model)
+        self.ollama_mode_var.set(p.ollama_mode)
+        self.ollama_host_var.set(p.ollama_host)
+        # "default" keeps the original workspace/ folder (see BotProfile.to_env_dict / start_instance)
+        self.workdir_var.set(p.agent_workdir or (
+            os.path.join(APP_DIR, "workspace") if p.id == "default"
+            else os.path.join(APP_DIR, "workspace", "profiles", p.id)))
+        self.account_mode_var.set(p.agent_account_mode)
+        self.run_as_user_var.set(p.agent_run_as_user)
+        self.allow_elevated_var.set(p.agent_allow_elevated == "1")
+        self.stoat_token_var.set(p.stoat_token)
+        self.stoat_channels_var.set(p.stoat_channels)
+        self.stoat_mode_var.set(p.stoat_bot_mode)
+        self.stoat_wake_var.set(p.stoat_wake_word)
+        keys = ([p.api_key] if p.api_key else []) + list(p.api_keys)
+        self.api_keys = list(dict.fromkeys(k for k in keys if k))
+        if hasattr(self, "keys_list"):
+            self._refresh_keys_list()
+        self._on_ollama_mode_change()
+        if hasattr(self, "prompt_text"):
+            self._load_personalization(p)
+
+    def _create_new_profile_dialog(self):
+        dlg = tk.Toplevel(self)
+        dlg.title("New Bot Profile")
+        dlg.geometry("400x220")
+        dlg.configure(bg=C["bg"])
+        dlg.transient(self)
+        dlg.grab_set()
+
+        tk.Label(dlg, text="Create New Bot Profile", font=("sans-serif", 11, "bold"),
+                 bg=C["bg"], fg=C["text"]).pack(anchor="w", padx=16, pady=(14, 8))
+
+        name_var = tk.StringVar(value="New Bot")
+        id_var = tk.StringVar(value=f"bot_{int(time.time()) % 1000}")
+
+        f = tk.Frame(dlg, bg=C["bg"])
+        f.pack(fill="x", padx=16)
+
+        tk.Label(f, text="Display Name:", bg=C["bg"], fg=C["subtext"], font=("monospace", 9)).grid(row=0, column=0, sticky="w", pady=4)
+        tk.Entry(f, textvariable=name_var, bg=C["panel"], fg=C["text"], relief="flat", width=26).grid(row=0, column=1, pady=4)
+
+        tk.Label(f, text="Profile ID (slug):", bg=C["bg"], fg=C["subtext"], font=("monospace", 9)).grid(row=1, column=0, sticky="w", pady=4)
+        tk.Entry(f, textvariable=id_var, bg=C["panel"], fg=C["text"], relief="flat", width=26).grid(row=1, column=1, pady=4)
+
+        def save_new():
+            pid = id_var.get().strip().lower()
+            name = name_var.get().strip() or "Custom Bot"
+            if not profiles.valid_profile_id(pid):
+                messagebox.showerror("Error", "Profile ID must be 1-40 characters: lowercase letters, numbers, "
+                                              "underscores or dashes (starting with a letter or number).", parent=dlg)
+                return
+            if profiles.manager.get_profile(pid):
+                messagebox.showerror("Error", f"A profile with the ID '{pid}' already exists.", parent=dlg)
+                return
+            new_prof = profiles.BotProfile(
+                id=pid,
+                name=name,
+                agent_workdir=os.path.join(APP_DIR, "workspace", "profiles", pid),
+            )
+            profiles.manager.save_profile(new_prof, set_active=True)
+            self._refresh_sidebar_profiles()
+            self._switch_to_profile(pid)
+            dlg.destroy()
+            messagebox.showinfo("Profile Created", f"Created profile '{name}' ({pid}). Configure its tokens and model in the Setup tab.")
+
+        btn_row = tk.Frame(dlg, bg=C["bg"])
+        btn_row.pack(fill="x", padx=16, pady=16)
+        tk.Button(btn_row, text="Create Profile", command=save_new, bg=C["accent"], fg=C["bg"],
+                  font=("sans-serif", 9, "bold"), relief="flat", padx=12, pady=4, cursor="hand2").pack(side="right")
+        tk.Button(btn_row, text="Cancel", command=dlg.destroy, bg=C["panel2"], fg=C["text"],
+                  relief="flat", padx=10, pady=4, cursor="hand2").pack(side="right", padx=6)
+
+    # ── export / import profiles (logic lives in profile_transfer.py) ──────────
+
+    @staticmethod
+    def _transfer_detail(part, infos):
+        """One-line size/count text for an export/import part, summed over `infos`."""
+        if part in ("memory", "history", "workspace"):
+            n = sum(i.get("files", 0) for i in infos)
+            size = sum(i.get("bytes", 0) for i in infos)
+            plus = "+" if any(i.get("capped") for i in infos) else ""
+            return f"{n}{plus} file{'s' if n != 1 else ''}, {profile_transfer.human_size(size)}"
+        n = sum(i.get("count", 0) for i in infos)
+        if part == "secrets":
+            return f"{n} saved"
+        if part == "dependencies":
+            return f"{n} package{'s' if n != 1 else ''}"
+        return f"{n} enabled" if n else "settings"
+
+    def _export_profiles_dialog(self):
+        try:
+            profs = profiles.manager.list_profiles()
+            active_id = profiles.manager.get_active_profile().id
+        except Exception as e:
+            messagebox.showerror("Export", f"Couldn't read the profiles: {e}")
+            return
+        if not profs:
+            messagebox.showinfo("Export", "There are no profiles to export.")
+            return
+        desc = {}
+        for p in profs:
+            try:
+                desc[p.id] = profile_transfer.describe(p.id)
+            except Exception:
+                desc[p.id] = {"name": p.name, "parts": {}, "notes": {}}
+
+        dlg = tk.Toplevel(self)
+        dlg.title("Export Profiles")
+        dlg.configure(bg=C["bg"])
+        dlg.transient(self)
+        dlg.grab_set()
+
+        tk.Label(dlg, text="Export profiles", font=("sans-serif", 11, "bold"),
+                 bg=C["bg"], fg=C["text"]).pack(anchor="w", padx=16, pady=(14, 2))
+        tk.Label(dlg, text="Saved as one .zip file. Settings and personalization are always included; "
+                           "pick what else goes in.", bg=C["bg"], fg=C["subtext"], font=("monospace", 8),
+                 wraplength=470, justify="left").pack(anchor="w", padx=16, pady=(0, 8))
+
+        sel = {}
+        box = tk.Frame(dlg, bg=C["panel"], padx=10, pady=8)
+        box.pack(fill="x", padx=16, pady=4)
+        tk.Label(box, text="Profiles", bg=C["panel"], fg=C["text"], font=("sans-serif", 9, "bold")).pack(anchor="w")
+        part_widgets = {}
+        part_vars = {part: tk.BooleanVar(value=False) for part in profile_transfer.PARTS}
+        warn_var = tk.StringVar(value="")
+
+        def refresh(*_):
+            chosen = [pid for pid, v in sel.items() if v.get()]
+            for part, cb in part_widgets.items():
+                infos = [desc[pid]["parts"][part] for pid in chosen if part in desc[pid]["parts"]]
+                label = profile_transfer.LABELS[part]
+                if infos:
+                    cb.config(text=f"{label}  —  {self._transfer_detail(part, infos)}", state="normal")
+                else:
+                    why = next((desc[pid]["notes"][part] for pid in chosen if part in desc[pid]["notes"]), "")
+                    cb.config(text=f"{label}  —  nothing to export" + (f" ({why})" if why else ""),
+                              state="disabled")
+                    part_vars[part].set(False)
+            risky = part_vars["secrets"].get() or part_vars["integrations"].get()
+            warn_var.set("⚠ This file will contain secrets (bot tokens, API keys). Anyone who has it can "
+                         "use your bots. Don't share it." if risky else "")
+
+        for p in profs:
+            sel[p.id] = tk.BooleanVar(value=(p.id == active_id))
+            tk.Checkbutton(box, text=f"{p.name}  ({p.id})", variable=sel[p.id], command=refresh,
+                           bg=C["panel"], fg=C["text"], selectcolor=C["bg"],
+                           activebackground=C["panel"], anchor="w").pack(anchor="w")
+
+        box2 = tk.Frame(dlg, bg=C["panel"], padx=10, pady=8)
+        box2.pack(fill="x", padx=16, pady=4)
+        tk.Label(box2, text="Include", bg=C["panel"], fg=C["text"], font=("sans-serif", 9, "bold")).pack(anchor="w")
+        tk.Checkbutton(box2, text="Settings & personalization (always)", state="disabled",
+                       bg=C["panel"], fg=C["subtext"], selectcolor=C["bg"], anchor="w").pack(anchor="w")
+        for part in profile_transfer.PARTS:
+            part_widgets[part] = tk.Checkbutton(
+                box2, text=profile_transfer.LABELS[part], variable=part_vars[part], command=refresh,
+                bg=C["panel"], fg=C["text"], selectcolor=C["bg"], activebackground=C["panel"], anchor="w")
+            part_widgets[part].pack(anchor="w")
+
+        tk.Label(dlg, text="Not exported: this computer's working folder, run-as user and elevation settings. "
+                           "Workspace export skips caches (.cache, .local, node_modules, venvs).",
+                 bg=C["bg"], fg=C["subtext"], font=("monospace", 8), wraplength=470, justify="left"
+                 ).pack(anchor="w", padx=16, pady=(4, 0))
+        tk.Label(dlg, textvariable=warn_var, bg=C["bg"], fg=C["red"], font=("monospace", 8, "bold"),
+                 wraplength=470, justify="left").pack(anchor="w", padx=16, pady=(4, 0))
+
+        def do_export():
+            ids = [pid for pid, v in sel.items() if v.get()]
+            if not ids:
+                messagebox.showwarning("Export", "Pick at least one profile.", parent=dlg)
+                return
+            parts = {k for k, v in part_vars.items() if v.get()}
+            path = filedialog.asksaveasfilename(
+                parent=dlg, title="Export profiles to…", defaultextension=".zip",
+                initialfile=(ids[0] if len(ids) == 1 else "systemc-profiles") + ".zip",
+                filetypes=[("SystemC profile (zip)", "*.zip"), ("All files", "*")])
+            if not path:
+                return
+            export_btn.config(state="disabled", text="Exporting…")
+
+            def work():
+                res = err = None
+                try:
+                    res = profile_transfer.export_profiles(ids, parts, path)
+                except profile_transfer.TransferError as e:
+                    err = str(e)
+                except Exception as e:
+                    err = f"Unexpected error: {e}"
+                self.after(0, lambda: done(res, err))
+
+            def done(res, err):
+                if err:
+                    export_btn.config(state="normal", text="Export…")
+                    messagebox.showerror("Export failed", err, parent=dlg)
+                    return
+                dlg.destroy()
+                messagebox.showinfo(
+                    "Export complete",
+                    f"Exported {len(res['profiles'])} profile(s): {res['files']} data file(s), "
+                    f"{profile_transfer.human_size(res['bytes'])}.\n\n{res['path']}")
+
+            threading.Thread(target=work, daemon=True).start()
+
+        btn_row = tk.Frame(dlg, bg=C["bg"])
+        btn_row.pack(fill="x", padx=16, pady=14)
+        export_btn = tk.Button(btn_row, text="Export…", command=do_export, bg=C["accent"], fg=C["bg"],
+                               font=("sans-serif", 9, "bold"), relief="flat", padx=12, pady=4, cursor="hand2")
+        export_btn.pack(side="right")
+        tk.Button(btn_row, text="Cancel", command=dlg.destroy, bg=C["panel2"], fg=C["text"],
+                  relief="flat", padx=10, pady=4, cursor="hand2").pack(side="right", padx=6)
+        refresh()
+
+    def _import_profiles_dialog(self):
+        path = filedialog.askopenfilename(
+            parent=self, title="Import profiles from…",
+            filetypes=[("SystemC profile (zip)", "*.zip"), ("All files", "*")])
+        if not path:
+            return
+        try:
+            info = profile_transfer.inspect_archive(path)
+        except profile_transfer.TransferError as e:
+            messagebox.showerror("Import", str(e))
+            return
+        except Exception as e:
+            messagebox.showerror("Import", f"Couldn't read that file: {e}")
+            return
+
+        dlg = tk.Toplevel(self)
+        dlg.title("Import Profiles")
+        dlg.configure(bg=C["bg"])
+        dlg.transient(self)
+        dlg.grab_set()
+
+        tk.Label(dlg, text="Import profiles", font=("sans-serif", 11, "bold"),
+                 bg=C["bg"], fg=C["text"]).pack(anchor="w", padx=16, pady=(14, 2))
+        made = " · ".join(x for x in (info["exported_at"], info["app"]) if x)
+        tk.Label(dlg, text=("Exported " + made) if made else "Choose what to bring in.",
+                 bg=C["bg"], fg=C["subtext"], font=("monospace", 8)).pack(anchor="w", padx=16)
+        tk.Label(dlg, text="Every profile is added as a NEW one; nothing existing is changed. Only import files "
+                           "you trust: a profile carries the agent's instructions.",
+                 bg=C["bg"], fg=C["subtext"], font=("monospace", 8), wraplength=470, justify="left"
+                 ).pack(anchor="w", padx=16, pady=(0, 6))
+
+        # parts that make a bot run code stay off unless you tick them
+        default_on = {"secrets": True, "memory": True, "history": True, "workspace": True,
+                      "dependencies": False, "integrations": False}
+        rows = {}
+
+        def build_row(sid, pinfo):
+            frame = tk.Frame(dlg, bg=C["panel"], padx=10, pady=8)
+            frame.pack(fill="x", padx=16, pady=4)
+            use = tk.BooleanVar(value=True)
+            tk.Checkbutton(frame, text=f"Import “{pinfo['name']}”  ({pinfo['model']})", variable=use,
+                           bg=C["panel"], fg=C["text"], selectcolor=C["bg"], activebackground=C["panel"],
+                           font=("sans-serif", 9, "bold"), anchor="w").pack(anchor="w")
+            name_var = tk.StringVar(value=pinfo["name"])
+            nr = tk.Frame(frame, bg=C["panel"])
+            nr.pack(fill="x", pady=2)
+            tk.Label(nr, text="Name:", bg=C["panel"], fg=C["subtext"], font=("monospace", 9)).pack(side="left")
+            tk.Entry(nr, textvariable=name_var, bg=C["panel2"], fg=C["text"], relief="flat",
+                     width=28).pack(side="left", padx=6)
+            id_lbl = tk.Label(frame, text="", bg=C["panel"], fg=C["subtext"], font=("monospace", 8))
+            id_lbl.pack(anchor="w")
+
+            def show_id(*_):
+                pid = profile_transfer.unique_id(profiles.slugify(name_var.get(), fallback=sid))
+                id_lbl.config(text=f"will be saved with the ID “{pid}” (a number is added if it's taken)")
+            name_var.trace_add("write", show_id)
+            show_id()
+
+            pvars = {}
+            for part in profile_transfer.PARTS:
+                if part not in pinfo["available"]:
+                    continue
+                pvars[part] = tk.BooleanVar(value=default_on[part])
+                text = f"{profile_transfer.LABELS[part]}  —  " \
+                       f"{self._transfer_detail(part, [pinfo['available'][part]])}"
+                if part == "dependencies":
+                    text += "  (" + ", ".join(pinfo["available"][part]["items"][:4]) + ")"
+                tk.Checkbutton(frame, text=text, variable=pvars[part], bg=C["panel"], fg=C["text"],
+                               selectcolor=C["bg"], activebackground=C["panel"], anchor="w").pack(anchor="w")
+            if "dependencies" in pvars or "integrations" in pvars:
+                tk.Label(frame, text="Dependencies are pip-installed and integrations give the bot extra tools, "
+                                     "so they're off unless you tick them.", bg=C["panel"], fg=C["subtext"],
+                         font=("monospace", 8), wraplength=440, justify="left").pack(anchor="w", pady=(2, 0))
+            rows[sid] = {"use": use, "name": name_var, "parts": pvars}
+
+        for sid, pinfo in info["profiles"].items():
+            build_row(sid, pinfo)
+
+        def do_import():
+            selections = {sid: {"name": r["name"].get().strip(),
+                                "parts": {p for p, v in r["parts"].items() if v.get()}}
+                          for sid, r in rows.items() if r["use"].get()}
+            if not selections:
+                messagebox.showwarning("Import", "Tick at least one profile.", parent=dlg)
+                return
+            import_btn.config(state="disabled", text="Importing…")
+
+            def work():
+                res = err = None
+                try:
+                    res = profile_transfer.import_archive(path, selections)
+                except profile_transfer.TransferError as e:
+                    err = str(e)
+                except Exception as e:
+                    err = f"Unexpected error: {e}"
+                self.after(0, lambda: done(res, err))
+
+            def done(res, err):
+                if err:
+                    import_btn.config(state="normal", text="Import")
+                    messagebox.showerror("Import failed", err, parent=dlg)
+                    return
+                dlg.destroy()
+                self._refresh_sidebar_profiles()
+                self._refresh_profiles_list()
+                lines = []
+                for r in res:
+                    extra = (" — " + ", ".join(r["parts"])) if r["parts"] else ""
+                    lines.append(f"• {r['name']}  (ID: {r['id']}){extra}")
+                tip = ""
+                if any("secrets" not in r["parts"] for r in res):
+                    tip = "\n\nBot tokens weren't imported for some profiles: add them in the Setup tab."
+                messagebox.showinfo("Import complete", "Imported:\n" + "\n".join(lines) + tip)
+
+            threading.Thread(target=work, daemon=True).start()
+
+        btn_row = tk.Frame(dlg, bg=C["bg"])
+        btn_row.pack(fill="x", padx=16, pady=14)
+        import_btn = tk.Button(btn_row, text="Import", command=do_import, bg=C["accent"], fg=C["bg"],
+                               font=("sans-serif", 9, "bold"), relief="flat", padx=12, pady=4, cursor="hand2")
+        import_btn.pack(side="right")
+        tk.Button(btn_row, text="Cancel", command=dlg.destroy, bg=C["panel2"], fg=C["text"],
+                  relief="flat", padx=10, pady=4, cursor="hand2").pack(side="right", padx=6)
+
+    def _quick_migrate_dialog(self):
+        env_path = os.path.join(APP_DIR, ".env")
+        if not os.path.exists(env_path):
+            messagebox.showinfo("Migration", "No legacy .env file found in root folder to migrate.")
+            return
+        if messagebox.askyesno("Migrate .env", "Found legacy .env file.\n\nMigrate it into a profile now? (A backup will be saved to .env.legacy.backup)"):
+            ok, msg = profiles.manager.migrate_from_env(env_path, "default")
+            if ok:
+                messagebox.showinfo("Migrated", msg)
+                self._refresh_sidebar_profiles()
+                self._switch_to_profile("default")
+            else:
+                messagebox.showerror("Error", msg)
+
+    def _build_profiles_tab(self):
+        f = self.tab_profiles
+        top = tk.Frame(f, bg=C["bg"])
+        top.pack(fill="x", pady=(12, 6))
+        tk.Label(top, text="Bot Profiles & Multi-Instance Manager", bg=C["bg"], fg=C["text"],
+                 font=("sans-serif", 12, "bold")).pack(side="left")
+        
+        btn_box = tk.Frame(top, bg=C["bg"])
+        btn_box.pack(side="right")
+
+        tk.Button(btn_box, text="New Profile", command=self._create_new_profile_dialog,
+                  bg=C["accent"], fg=C["bg"], relief="flat", padx=10, pady=3,
+                  font=("sans-serif", 9, "bold"), cursor="hand2").pack(side="left", padx=4)
+
+        tk.Button(btn_box, text="⬇ Import…", command=self._import_profiles_dialog,
+                  bg=C["panel2"], fg=C["text"], relief="flat", padx=10, pady=3,
+                  cursor="hand2").pack(side="left", padx=4)
+
+        tk.Button(btn_box, text="⬆ Export…", command=self._export_profiles_dialog,
+                  bg=C["panel2"], fg=C["text"], relief="flat", padx=10, pady=3,
+                  cursor="hand2").pack(side="left", padx=4)
+
+        tk.Button(btn_box, text="Migrate .env", command=self._quick_migrate_dialog,
+                  bg=C["panel2"], fg=C["text"], relief="flat", padx=10, pady=3,
+                  cursor="hand2").pack(side="left", padx=4)
+
+        tk.Button(btn_box, text="↻ Refresh", command=self._refresh_profiles_list,
+                  bg=C["panel2"], fg=C["text"], relief="flat", padx=10, pady=3,
+                  cursor="hand2").pack(side="left", padx=4)
+
+        desc = tk.Label(f, text="Run as many bots at once as you like. Each profile has its own tokens, API keys, AI model, memory, chat history, isolated workspace and custom dependencies (the default profile keeps the original folders). Select a profile to edit its settings.",
+                        bg=C["bg"], fg=C["subtext"], font=("monospace", 9), wraplength=680, justify="left")
+        desc.pack(anchor="w", pady=(0, 8))
+
+        # Scrollable container for profile cards
+        outer = tk.Frame(f, bg=C["bg"])
+        outer.pack(fill="both", expand=True)
+        canvas = tk.Canvas(outer, bg=C["bg"], highlightthickness=0)
+        bar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=bar.set)
+        bar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        self.profiles_container = tk.Frame(canvas, bg=C["bg"])
+        win = canvas.create_window((0, 0), window=self.profiles_container, anchor="nw")
+        self.profiles_container.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(win, width=e.width))
+
+        self._refresh_profiles_list()
+        self.after(2500, self._poll_bot_statuses)
+
+    def _poll_bot_statuses(self):
+        try:
+            running_count = sum(1 for p in profiles.manager.list_profiles() if profiles.supervisor.is_running(p.id))
+            if hasattr(self, "sidebar_running_lbl"):
+                self.sidebar_running_lbl.config(
+                    text=f"Bots Active: {running_count}",
+                    fg=C["green"] if running_count > 0 else C["subtext"]
+                )
+            self._update_run_bot_status()
+        except Exception:
+            pass
+        self.after(2500, self._poll_bot_statuses)
+
+    def _refresh_profiles_list(self):
+        if not hasattr(self, "profiles_container"):
+            return
+        for w in self.profiles_container.winfo_children():
+            w.destroy()
+
+        profs = profiles.manager.list_profiles()
+        active_prof = profiles.manager.get_active_profile()
+
+        for p in profs:
+            self._render_profile_card(p, is_active=(active_prof and active_prof.id == p.id))
+
+    def _render_profile_card(self, p, is_active=False):
+        card = tk.Frame(self.profiles_container, bg=C["panel"], padx=12, pady=10)
+        card.pack(fill="x", pady=(0, 8))
+
+        head = tk.Frame(card, bg=C["panel"])
+        head.pack(fill="x")
+
+        title_txt = f"{p.name}  [{p.id}]"
+        tk.Label(head, text=title_txt, font=("sans-serif", 10, "bold"),
+                 bg=C["panel"], fg=C["text"]).pack(side="left")
+
+        if is_active:
+            tk.Label(head, text="★ ACTIVE", font=("monospace", 8, "bold"),
+                     bg=C["accent"], fg=C["bg"], padx=6, pady=1).pack(side="left", padx=8)
+
+        is_running = profiles.supervisor.is_running(p.id)
+        status_lbl = tk.Label(
+            head,
+            text=f"● running (PID {profiles.supervisor.instances.get(p.id, {}).get('pid', '?')})" if is_running else "● stopped",
+            font=("monospace", 9),
+            bg=C["panel"],
+            fg=C["green"] if is_running else C["red"]
+        )
+        status_lbl.pack(side="right")
+
+        # Details row
+        details = tk.Frame(card, bg=C["panel"])
+        details.pack(fill="x", pady=(4, 6))
+
+        platforms = [p.discord_token and "Discord", p.stoat_token and "Stoat"]
+        plat_str = " + ".join(x for x in platforms if x) or "None configured"
+        deps_str = ", ".join(p.dependencies) if p.dependencies else "None"
+
+        info_txt = f"Model: {p.agent_model} ({p.agent_provider})  •  Platforms: {plat_str}  •  Deps: {deps_str}"
+        tk.Label(details, text=info_txt, font=("monospace", 8), bg=C["panel"], fg=C["subtext"]).pack(anchor="w")
+
+        # Controls row
+        btn_row = tk.Frame(card, bg=C["panel"])
+        btn_row.pack(fill="x", pady=(4, 0))
+
+        def toggle_run():
+            if profiles.supervisor.is_running(p.id):
+                profiles.supervisor.stop_instance(p.id)
+            else:
+                ok, msg = profiles.supervisor.start_instance(p.id)
+                if not ok:
+                    messagebox.showerror("Start Error", msg)
+            self._refresh_profiles_list()
+
+        def pull_deps():
+            def worker():
+                self.log_queue.put((p.id, f"Pulling dependencies for [{p.name}]...\n"))
+                ok, msg = profiles.manager.pull_dependencies(p.id, log_queue=self.log_queue)
+                self.log_queue.put((p.id, msg + "\n"))
+                if ok:
+                    self.after(0, lambda: messagebox.showinfo("Dependencies", f"Dependencies for '{p.name}' pulled successfully!"))
+                else:
+                    self.after(0, lambda: messagebox.showerror("Dependency Error", msg))
+            threading.Thread(target=worker, daemon=True).start()
+            self._switch_to_logs_hint()
+
+        def set_active():
+            self._switch_to_profile(p.id)
+            messagebox.showinfo("Active Profile", f"Switched active profile to '{p.name}'. Setup tab updated.")
+
+        def delete_prof():
+            if p.id == "default":
+                messagebox.showerror("Error", "Cannot delete the default profile.")
+                return
+            if profiles.supervisor.is_running(p.id):
+                messagebox.showerror("Error", "Stop this bot instance before deleting.")
+                return
+            if messagebox.askyesno("Delete Profile", f"Delete profile '{p.name}' ({p.id})?"):
+                profiles.manager.delete_profile(p.id)
+                self._refresh_sidebar_profiles()
+                self._refresh_profiles_list()
+
+        tk.Button(btn_row, text="■ Stop" if is_running else "▶ Start", command=toggle_run,
+                  bg=C["red"] if is_running else C["green"], fg=C["bg"], relief="flat",
+                  padx=10, pady=2, font=("sans-serif", 8, "bold"), cursor="hand2").pack(side="left", padx=(0, 6))
+
+        tk.Button(btn_row, text="Pull Dependencies", command=pull_deps,
+                  bg=C["panel2"], fg=C["text"], relief="flat", padx=8, pady=2,
+                  font=("sans-serif", 8), cursor="hand2").pack(side="left", padx=4)
+
+        if not is_active:
+            tk.Button(btn_row, text="★ Set Active", command=set_active,
+                      bg=C["panel2"], fg=C["text"], relief="flat", padx=8, pady=2,
+                      font=("sans-serif", 8), cursor="hand2").pack(side="left", padx=4)
+
+        if p.id != "default":
+            tk.Button(btn_row, text="Delete", command=delete_prof,
+                      bg=C["panel2"], fg=C["red"], relief="flat", padx=8, pady=2,
+                      font=("sans-serif", 8), cursor="hand2").pack(side="right")
+
     # ── tab 1: setup ────────────────────────────────────────────────────────
 
     def _build_setup_tab(self):
@@ -460,12 +1114,7 @@ class ControlPanel(tk.Tk):
                 kwargs["show"] = show
             tk.Entry(f, **kwargs).pack(anchor="w", pady=(0, 4))
 
-        tk.Label(f, text="Agent name", bg=C["bg"], fg=C["text"],
-                  font=("sans-serif", 10, "bold")).pack(anchor="w", pady=(10, 0))
-        label("What the agent calls itself. It's written into the system prompt, so the "
-              "agent answers to this name. Leave blank for the default (SystemC). "
-              "Restart the bot to apply.")
-        entry(self.agent_name_var)
+        label("Agent name, gender, pronouns and the system prompt are on the Personalization tab.")
 
         tk.Label(f, text="Discord bot token", bg=C["bg"], fg=C["text"],
                   font=("sans-serif", 10, "bold")).pack(anchor="w", pady=(10, 0))
@@ -552,7 +1201,7 @@ class ControlPanel(tk.Tk):
         key_btns = tk.Frame(keys_row, bg=C["bg"])
         key_btns.pack(side="left", padx=8, anchor="n")
         for txt, cmd in [("▲", lambda: self._move_key(-1)), ("▼", lambda: self._move_key(1)),
-                         ("🗑 Remove", self._remove_key)]:
+                         ("Remove", self._remove_key)]:
             tk.Button(key_btns, text=txt, command=cmd, bg=C["panel2"], fg=C["text"],
                        relief="flat", padx=8, pady=1, cursor="hand2").pack(fill="x", pady=1)
         add_row = tk.Frame(self.cloud_frame, bg=C["bg"])
@@ -561,7 +1210,7 @@ class ControlPanel(tk.Tk):
                               bg=C["panel"], fg=C["text"], insertbackground=C["text"], relief="flat")
         key_entry.pack(side="left")
         key_entry.bind("<Return>", lambda e: self._add_key())
-        tk.Button(add_row, text="➕ Add key", command=self._add_key, bg=C["panel2"], fg=C["text"],
+        tk.Button(add_row, text="Add key", command=self._add_key, bg=C["panel2"], fg=C["text"],
                    relief="flat", padx=10, pady=2, cursor="hand2").pack(side="left", padx=8)
         self._refresh_keys_list()
 
@@ -573,7 +1222,7 @@ class ControlPanel(tk.Tk):
         model_row.pack(anchor="w", pady=(0, 4))
         self.model_combo = ttk.Combobox(model_row, textvariable=self.model_var, width=42)
         self.model_combo.pack(side="left")
-        tk.Button(model_row, text="🔎  Fetch available models", command=self._fetch_models,
+        tk.Button(model_row, text="Fetch available models", command=self._fetch_models,
                    bg=C["panel2"], fg=C["text"], relief="flat", padx=10, pady=3,
                    cursor="hand2").pack(side="left", padx=8)
         self.model_fetch_lbl = tk.Label(f, text="", bg=C["bg"], fg=C["subtext"],
@@ -690,7 +1339,7 @@ class ControlPanel(tk.Tk):
 
         tk.Button(
             setup_action_row,
-            text=tr("⚡ Set up / Verify directory"),
+            text=tr("Set up / Verify directory"),
             command=self._setup_workspace_action,
             bg=C["panel2"], fg=C["text"], relief="flat", padx=8, pady=2, cursor="hand2",
             font=("sans-serif", 9, "bold"),
@@ -698,7 +1347,7 @@ class ControlPanel(tk.Tk):
 
         tk.Button(
             setup_action_row,
-            text=tr("🔗 Allow panel to run as user"),
+            text=tr("Allow panel to run as user"),
             command=self._grant_runas_action,
             bg=C["panel2"], fg=C["text"], relief="flat", padx=8, pady=2, cursor="hand2",
             font=("sans-serif", 9, "bold"),
@@ -715,7 +1364,7 @@ class ControlPanel(tk.Tk):
 
         btn_row = tk.Frame(f, bg=C["bg"])
         btn_row.pack(anchor="w", pady=16)
-        tk.Button(btn_row, text="💾  Save config", command=self._save_config,
+        tk.Button(btn_row, text="Save config", command=self._save_config,
                    bg=C["accent"], fg=C["bg"], relief="flat", padx=14, pady=8,
                    font=("sans-serif", 10, "bold"), cursor="hand2").pack(side="left")
         self.setup_status = tk.Label(btn_row, text="", bg=C["bg"], fg=C["green"],
@@ -734,9 +1383,18 @@ class ControlPanel(tk.Tk):
         configured user. Offers the one-time setup (asks for your sudo password
         once) instead of failing."""
         user = self._run_as_user()
-        if not runas.needs_switch(user) or runas.can_switch(user):
+        if not runas.needs_switch(user):
             return True
-        if not messagebox.askyesno(
+        if runas.can_switch(user):
+            if runas.can_access(user, APP_DIR):
+                return True
+            # Switching works but the agent can't read/write the app folder (e.g. it
+            # lives in your home). Fix it silently if this account owns the folder;
+            # otherwise fall through to the full setup below (sudo password once).
+            runas.grant_agent_access(user, APP_DIR)
+            if runas.can_access(user, APP_DIR):
+                return True
+        elif not messagebox.askyesno(
             tr("Run as {user}", user=user),
             tr("To run the agent as '{user}', this account needs permission to start "
                "processes as that user without a password, and write access to the app "
@@ -784,17 +1442,17 @@ class ControlPanel(tk.Tk):
             )
         elif not status["exists"]:
             self.workspace_status_lbl.config(
-                text=tr("⚠️ Does not exist (root required to create)"),
+                text=tr("Does not exist (root required to create)"),
                 fg=C["yellow"],
             )
         elif not status["writable"]:
             self.workspace_status_lbl.config(
-                text=tr("⚠️ Exists but not writable by {target}", target=status["target_user"]),
+                text=tr("Exists but not writable by {target}", target=status["target_user"]),
                 fg=C["red"],
             )
         elif status["needs_root"]:
             self.workspace_status_lbl.config(
-                text=tr("⚠️ Needs setup / root privileges"),
+                text=tr("Needs setup / root privileges"),
                 fg=C["yellow"],
             )
 
@@ -878,6 +1536,19 @@ class ControlPanel(tk.Tk):
                         want = have
             elevated = "1" if want else "0"
 
+        # The Setup tab was filled from a profile (sidebar dropdown): save into that profile.
+        # Writing it to the global .env would leak the profile's token/model into the legacy
+        # Run-tab bot, and the profile itself would never change.
+        pid = getattr(self, "_setup_pid", None)
+        if pid:
+            prof = profiles.manager.get_profile(pid)
+            if prof is None:
+                messagebox.showerror(tr("Error"), tr("Profile not found."))
+                return
+            self._save_config_to_profile(prof, has_discord, has_stoat, cloud,
+                                         mode, workdir, run_as, elevated)
+            return
+
         # Start from the existing .env so hand-added keys (e.g. ANTHROPIC_API_KEY) survive
         env = load_env()
         for k in ("DISCORD_BOT_TOKEN", "ALLOWED_CHANNEL_IDS", "STOAT_BOT_TOKEN",
@@ -915,6 +1586,50 @@ class ControlPanel(tk.Tk):
         self._update_workspace_status_ui()
         self.setup_status.config(text=tr("✓ saved to .env"))
         self.after(3000, lambda: self.setup_status.config(text=""))
+
+    def _save_config_to_profile(self, p, has_discord, has_stoat, cloud, mode, workdir, run_as, elevated):
+        """Write the Setup tab's fields into profile `p` (and not into .env).
+
+        Fields the Setup tab has no widget for stay as they are: provider, bot name /
+        gender / pronouns / prompt (Personalization tab), subagents, dependencies, ...
+        """
+        fallback = (os.path.join(APP_DIR, "workspace") if p.id == "default"
+                    else os.path.join(APP_DIR, "workspace", "profiles", p.id))
+        keys = list(self.api_keys)            # kept even in local mode, like the profile had them
+        data = p.to_dict()
+        data.update({
+            "discord_enabled": has_discord,
+            "discord_token": self.token_var.get().strip(),
+            "discord_channels": self.channels_var.get().strip(),
+            "discord_bot_mode": self.mode_var.get(),
+            "discord_wake_word": self.wake_var.get().strip() or "hey claw",
+            "stoat_enabled": has_stoat,
+            "stoat_token": self.stoat_token_var.get().strip(),
+            "stoat_channels": self.stoat_channels_var.get().strip(),
+            "stoat_bot_mode": self.stoat_mode_var.get(),
+            "stoat_wake_word": self.stoat_wake_var.get().strip() or "hey claw",
+            "agent_model": self.model_var.get().strip() or ("gpt-oss:120b" if cloud else "llama3.2"),
+            "ollama_mode": "cloud" if cloud else "local",
+            "ollama_host": ("https://ollama.com" if cloud
+                            else self.ollama_host_var.get().strip() or "http://localhost:11434"),
+            "api_key": keys[0] if keys else "",
+            "api_keys": keys[1:],
+            "agent_account_mode": mode,
+            # the profile's own default folder is stored as "" so it keeps following it
+            "agent_workdir": "" if os.path.normpath(workdir) == os.path.normpath(fallback) else workdir,
+            "agent_run_as_user": run_as,
+            "agent_allow_elevated": "1" if elevated == "1" else "0",
+        })
+        try:
+            profiles.manager.save_profile(profiles.BotProfile.from_dict(data))
+        except Exception as e:
+            messagebox.showerror(tr("Couldn't save"), str(e))
+            return
+        self._refresh_ollama_status()
+        self._update_workspace_status_ui()
+        self._refresh_profiles_list()
+        self.setup_status.config(text=tr("✓ saved for {name} — restart that bot to apply", name=p.name))
+        self.after(5000, lambda: self.setup_status.config(text=""))
 
     def _on_ollama_mode_change(self):
         if self.ollama_mode_var.get() == "cloud":
@@ -983,7 +1698,7 @@ class ControlPanel(tk.Tk):
                 except RuntimeError as e:
                     err = e
             if names is None:
-                self.after(0, lambda: self.model_fetch_lbl.config(text=f"⚠️  {err}", fg=C["red"]))
+                self.after(0, lambda: self.model_fetch_lbl.config(text=f"{err}", fg=C["red"]))
                 return
 
             def done():
@@ -995,6 +1710,192 @@ class ControlPanel(tk.Tk):
             self.after(0, done)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    # ── tab: personalization ─────────────────────────────────────────────────
+
+    def _build_personalization_tab(self):
+        f = self.tab_personal
+        self.gender_var = tk.StringVar()
+        self.pronouns_var = tk.StringVar()
+        self._personal_pid = None
+
+        top = tk.Frame(f, bg=C["bg"])
+        top.pack(fill="x", pady=(14, 2))
+        tk.Label(top, text="Personalization", bg=C["bg"], fg=C["text"],
+                 font=("sans-serif", 11, "bold")).pack(side="left")
+        self.personal_profile_lbl = tk.Label(top, text="", bg=C["bg"], fg=C["accent"],
+                                             font=("monospace", 9, "bold"))
+        self.personal_profile_lbl.pack(side="right")
+        tk.Label(f, text="Who this profile's agent is, and the system prompt it runs on. Each profile "
+                         "has its own. Restart that bot to apply changes.",
+                 bg=C["bg"], fg=C["subtext"], font=("monospace", 9), wraplength=680,
+                 justify="left").pack(anchor="w", pady=(0, 8))
+
+        # name / gender / pronouns: plain text boxes, so anything can be typed
+        fields = tk.Frame(f, bg=C["bg"])
+        fields.pack(fill="x")
+        for col, (title, var, hint) in enumerate((
+            ("Bot name", self.agent_name_var, "Blank = the profile's name"),
+            ("Gender", self.gender_var, "Anything: female, male, Gender Non-Conforming…"),
+            ("Pronouns", self.pronouns_var, "Anything: he/him, she/her, xe/xer…"),
+        )):
+            cell = tk.Frame(fields, bg=C["bg"])
+            cell.grid(row=0, column=col, sticky="nw", padx=(0, 14))
+            tk.Label(cell, text=title, bg=C["bg"], fg=C["text"],
+                     font=("sans-serif", 10, "bold")).pack(anchor="w")
+            tk.Entry(cell, textvariable=var, bg=C["panel"], fg=C["text"], insertbackground=C["text"],
+                     relief="flat", width=24).pack(anchor="w", pady=(2, 1), ipady=3)
+            tk.Label(cell, text=hint, bg=C["bg"], fg=C["subtext"], font=("monospace", 8),
+                     wraplength=210, justify="left").pack(anchor="w")
+
+        # system prompt
+        head = tk.Frame(f, bg=C["bg"])
+        head.pack(fill="x", pady=(12, 2))
+        tk.Label(head, text="System prompt", bg=C["bg"], fg=C["text"],
+                 font=("sans-serif", 10, "bold")).pack(side="left")
+        self.prompt_mode_lbl = tk.Label(head, text="", bg=C["bg"], fg=C["subtext"], font=("monospace", 8))
+        self.prompt_mode_lbl.pack(side="right")
+        tk.Label(f, text="This is the full default prompt: edit it to fine-tune, or replace it entirely. "
+                         "Click a variable to insert it where the cursor is. Integration tools and memory "
+                         "are added after your prompt automatically.",
+                 bg=C["bg"], fg=C["subtext"], font=("monospace", 9), wraplength=680,
+                 justify="left").pack(anchor="w", pady=(0, 4))
+
+        chips = tk.Frame(f, bg=C["bg"])
+        chips.pack(fill="x", pady=(0, 2))
+        tk.Label(chips, text="Variables:", bg=C["bg"], fg=C["subtext"],
+                 font=("monospace", 8)).pack(side="left", padx=(0, 4))
+        for token, _desc in prompt_template.VARIABLES:
+            tk.Button(chips, text=token, command=lambda t=token: self._insert_prompt_var(t),
+                      bg=C["panel2"], fg=C["accent"], relief="flat", padx=6, pady=1,
+                      font=("monospace", 8, "bold"), cursor="hand2").pack(side="left", padx=2)
+        tk.Label(f, text="   ".join(f"{t} = {d}" for t, d in prompt_template.VARIABLES[:5]),
+                 bg=C["bg"], fg=C["subtext"], font=("monospace", 8), wraplength=680,
+                 justify="left").pack(anchor="w", pady=(0, 4))
+
+        box = tk.Frame(f, bg=C["bg"])
+        box.pack(fill="both", expand=True)
+        bar = ttk.Scrollbar(box, orient="vertical")
+        bar.pack(side="right", fill="y")
+        self.prompt_text = tk.Text(box, wrap="word", undo=True, bg=C["panel"], fg=C["text"],
+                                   insertbackground=C["text"], relief="flat", font=("monospace", 9),
+                                   padx=8, pady=6, yscrollcommand=bar.set, height=10)
+        self.prompt_text.pack(side="left", fill="both", expand=True)
+        bar.config(command=self.prompt_text.yview)
+        self.prompt_text.bind("<<Modified>>", self._on_prompt_modified)
+
+        btns = tk.Frame(f, bg=C["bg"])
+        btns.pack(fill="x", pady=(8, 8))
+        tk.Button(btns, text="Save", command=self._save_personalization, bg=C["green"], fg=C["bg"],
+                  relief="flat", padx=12, pady=4, font=("sans-serif", 9, "bold"),
+                  cursor="hand2").pack(side="left", padx=(0, 6))
+        tk.Button(btns, text="Preview", command=self._preview_prompt, bg=C["panel2"], fg=C["text"],
+                  relief="flat", padx=10, pady=4, cursor="hand2").pack(side="left", padx=(0, 6))
+        tk.Button(btns, text="↺ Reset to default prompt", command=self._reset_prompt, bg=C["panel2"],
+                  fg=C["text"], relief="flat", padx=10, pady=4, cursor="hand2").pack(side="left")
+        self.personal_status = tk.Label(btns, text="", bg=C["bg"], fg=C["green"], font=("monospace", 9),
+                                        wraplength=420, justify="left")
+        self.personal_status.pack(side="left", padx=10)
+
+        try:
+            self._load_personalization(profiles.manager.get_active_profile())
+        except Exception:
+            self._set_prompt_text(prompt_template.DEFAULT_PROMPT_TEMPLATE)
+
+    def _set_prompt_text(self, text: str):
+        self.prompt_text.delete("1.0", "end")
+        self.prompt_text.insert("1.0", text)
+        self.prompt_text.edit_reset()
+        self.prompt_text.edit_modified(False)
+        self._update_prompt_mode()
+
+    def _prompt_text_value(self) -> str:
+        return self.prompt_text.get("1.0", "end-1c").replace("\r\n", "\n")
+
+    def _prompt_is_default(self) -> bool:
+        t = self._prompt_text_value().strip()
+        return not t or t == prompt_template.DEFAULT_PROMPT_TEMPLATE.strip()
+
+    def _update_prompt_mode(self):
+        self.prompt_mode_lbl.config(
+            text=tr("built-in default (follows updates)") if self._prompt_is_default()
+            else tr("custom prompt"))
+
+    def _on_prompt_modified(self, _e=None):
+        if self.prompt_text.edit_modified():
+            self.prompt_text.edit_modified(False)
+            self._update_prompt_mode()
+
+    def _insert_prompt_var(self, token: str):
+        self.prompt_text.insert("insert", token)
+        self.prompt_text.focus_set()
+
+    def _load_personalization(self, p):
+        """Fill the tab from a profile. A profile with no custom prompt shows the default one."""
+        self._personal_pid = p.id
+        self.agent_name_var.set(p.bot_name)
+        self.gender_var.set(p.gender)
+        self.pronouns_var.set(p.pronouns)
+        self.personal_profile_lbl.config(text=f"{p.name} ({p.id})")
+        self._set_prompt_text(p.system_prompt or prompt_template.DEFAULT_PROMPT_TEMPLATE)
+        self.personal_status.config(text="")
+
+    def _reset_prompt(self):
+        if not self._prompt_is_default() and not messagebox.askyesno(
+                tr("Reset prompt?"), tr("Replace the prompt in the box with the built-in default? "
+                                        "Your edits will be lost unless you press Save to keep them.")):
+            return
+        self._set_prompt_text(prompt_template.DEFAULT_PROMPT_TEMPLATE)
+        self.personal_status.config(text=tr("Default restored — press Save to apply."), fg=C["yellow"])
+
+    def _save_personalization(self):
+        p = profiles.manager.get_profile(self._personal_pid or "")
+        if not p:
+            messagebox.showerror(tr("Error"), tr("Profile not found."))
+            return
+        data = p.to_dict()
+        data["bot_name"] = self.agent_name_var.get()
+        data["gender"] = self.gender_var.get()
+        data["pronouns"] = self.pronouns_var.get()
+        # The default is stored as "" so the profile keeps following the built-in prompt when it is updated.
+        data["system_prompt"] = "" if self._prompt_is_default() else self._prompt_text_value()
+        try:
+            profiles.manager.save_profile(profiles.BotProfile.from_dict(data))
+        except Exception as e:
+            messagebox.showerror(tr("Couldn't save"), str(e))
+            return
+        known = {t.strip("{}") for t, _ in prompt_template.VARIABLES}
+        unknown = sorted({m for m in re.findall(r"\{([A-Z][A-Z_]*)\}", self._prompt_text_value())} - known)
+        msg = tr("✓ saved for {name} — restart that bot to apply", name=p.name)
+        if unknown:
+            msg += "\n" + tr("Not a variable (sent as typed): {names}",
+                              names=", ".join("{" + u + "}" for u in unknown))
+        self.personal_status.config(text=msg, fg=C["yellow"] if unknown else C["green"])
+        self._refresh_profiles_list()
+
+    def _preview_prompt(self):
+        p = profiles.manager.get_profile(self._personal_pid or "")
+        text = prompt_template.render(
+            self._prompt_text_value() if self._prompt_text_value().strip() else prompt_template.DEFAULT_PROMPT_TEMPLATE,
+            name=self.agent_name_var.get() or (p.name if p else ""),
+            gender=self.gender_var.get(), pronouns=self.pronouns_var.get(),
+            model=p.agent_model if p else "",
+            source=prompt_template.source_label(
+                p.agent_provider if p else "", p.ollama_mode if p else "", p.ollama_host if p else "",
+                bool(p and (p.api_key or p.api_keys))) if p else "",
+        )
+        dlg = tk.Toplevel(self)
+        dlg.title(tr("Prompt preview"))
+        dlg.geometry("720x520")
+        dlg.configure(bg=C["bg"])
+        dlg.transient(self)
+        tk.Label(dlg, text=tr("What the model sees (variables filled in; integration tools and memory come after)"),
+                 bg=C["bg"], fg=C["subtext"], font=("monospace", 9)).pack(anchor="w", padx=12, pady=(10, 4))
+        st = scrolledtext.ScrolledText(dlg, wrap="word", bg=C["panel"], fg=C["text"], relief="flat",
+                                       font=("monospace", 9), padx=8, pady=6)
+        st.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        st.insert("1.0", text)
+        st.config(state="disabled")
 
     # ── tab 2: dependencies ─────────────────────────────────────────────────
 
@@ -1015,10 +1916,10 @@ class ControlPanel(tk.Tk):
 
         btn_row = tk.Frame(f, bg=C["bg"])
         btn_row.pack(anchor="w", pady=12)
-        tk.Button(btn_row, text="🔎  Re-check", command=self._refresh_dependency_status,
+        tk.Button(btn_row, text="Re-check", command=self._refresh_dependency_status,
                    bg=C["panel2"], fg=C["text"], relief="flat", padx=10, pady=6,
                    cursor="hand2").pack(side="left")
-        tk.Button(btn_row, text="⬇️  Install missing", command=self._install_missing,
+        tk.Button(btn_row, text="Install missing", command=self._install_missing,
                    bg=C["accent"], fg=C["bg"], relief="flat", padx=10, pady=6,
                    font=("sans-serif", 9, "bold"), cursor="hand2").pack(side="left", padx=8)
 
@@ -1037,10 +1938,10 @@ class ControlPanel(tk.Tk):
 
         btn_row2 = tk.Frame(f, bg=C["bg"])
         btn_row2.pack(anchor="w")
-        tk.Button(btn_row2, text="🔎  Re-check Ollama", command=self._refresh_ollama_status,
+        tk.Button(btn_row2, text="Re-check Ollama", command=self._refresh_ollama_status,
                    bg=C["panel2"], fg=C["text"], relief="flat", padx=10, pady=6,
                    cursor="hand2").pack(side="left")
-        tk.Button(btn_row2, text="⬇️  Pull recommended model (qwen2.5)",
+        tk.Button(btn_row2, text="Pull recommended model (qwen2.5)",
                    command=lambda: self._pull_model("qwen2.5"),
                    bg=C["panel2"], fg=C["text"], relief="flat", padx=10, pady=6,
                    cursor="hand2").pack(side="left", padx=8)
@@ -1082,16 +1983,16 @@ class ControlPanel(tk.Tk):
     def _refresh_ollama_status(self):
         if self.ollama_mode_var.get() == "cloud":
             self.ollama_status_lbl.config(
-                text=tr("☁️  Ollama Cloud mode — no local Ollama needed (uses your API key)"),
+                text=tr("Ollama Cloud mode — no local Ollama needed (uses your API key)"),
                 fg=C["green"])
             return
         if not check_ollama_installed():
             self.ollama_status_lbl.config(
-                text=tr("⚠️  ollama not found — install from https://ollama.com"), fg=C["red"])
+                text=tr("ollama not found — install from https://ollama.com"), fg=C["red"])
             return
         if not check_ollama_running():
             self.ollama_status_lbl.config(
-                text=tr("⚠️  installed but not running — run: ollama serve"), fg=C["yellow"])
+                text=tr("installed but not running — run: ollama serve"), fg=C["yellow"])
             return
         models = get_installed_models()
         self.model_list.delete(0, "end")
@@ -1102,7 +2003,7 @@ class ControlPanel(tk.Tk):
                 text=tr("✓  running — {n} model(s) installed", n=len(models)), fg=C["green"])
         else:
             self.ollama_status_lbl.config(
-                text=tr("⚠️  running, but no models pulled — run: ollama pull qwen2.5"), fg=C["yellow"])
+                text=tr("running, but no models pulled — run: ollama pull qwen2.5"), fg=C["yellow"])
 
     def _pull_model(self, model_name: str):
         def worker():
@@ -1135,8 +2036,9 @@ class ControlPanel(tk.Tk):
         # Discord bot controls
         bot_box = tk.Frame(controls, bg=C["panel"], padx=12, pady=10)
         bot_box.pack(side="left", padx=(0, 8), fill="both", expand=True)
-        tk.Label(bot_box, text="Discord bot", bg=C["panel"], fg=C["text"],
-                  font=("sans-serif", 10, "bold")).pack(anchor="w")
+        self.run_bot_title = tk.Label(bot_box, text="Selected bot", bg=C["panel"], fg=C["text"],
+                                       font=("sans-serif", 10, "bold"))
+        self.run_bot_title.pack(anchor="w")
         self.bot_status_dot = tk.Label(bot_box, text=tr("●  stopped"), bg=C["panel"], fg=C["red"],
                                          font=("monospace", 9))
         self.bot_status_dot.pack(anchor="w", pady=(2, 6))
@@ -1149,6 +2051,7 @@ class ControlPanel(tk.Tk):
                    bg=C["red"], fg=C["bg"], relief="flat", padx=10, pady=4,
                    cursor="hand2").pack(side="left", padx=6)
         tk.Checkbutton(bot_box, text="Auto-restart on crash", variable=self.bot_auto_restart,
+                        command=self._on_run_auto_restart_toggle,
                         bg=C["panel"], fg=C["subtext"], selectcolor=C["bg"],
                         activebackground=C["panel"], font=("monospace", 8)).pack(anchor="w", pady=(6, 0))
 
@@ -1168,7 +2071,7 @@ class ControlPanel(tk.Tk):
         tk.Button(wr, text="■ Stop", command=self._stop_webui,
                    bg=C["red"], fg=C["bg"], relief="flat", padx=10, pady=4,
                    cursor="hand2").pack(side="left", padx=6)
-        tk.Button(wr, text="🌐 Open", command=lambda: webbrowser.open("http://localhost:7842"),
+        tk.Button(wr, text="Open", command=lambda: webbrowser.open("http://localhost:7842"),
                    bg=C["panel2"], fg=C["text"], relief="flat", padx=10, pady=4,
                    cursor="hand2").pack(side="left", padx=6)
         tk.Checkbutton(webui_box, text="Auto-restart on crash", variable=self.webui_auto_restart,
@@ -1205,6 +2108,7 @@ class ControlPanel(tk.Tk):
         self.log_box.tag_config("webui", foreground="#a6e3a1")
         self.log_box.tag_config("setup", foreground="#f9e2af")
         self.log_box.tag_config("stoat", foreground="#cba6f7")
+        self._sync_run_tab_to_profile()
 
     def _start_stoat(self):
         env = load_env()
@@ -1229,17 +2133,62 @@ class ControlPanel(tk.Tk):
             return False
         return True
 
+    # The Run tab's bot box controls the profile selected in the sidebar, through the same
+    # supervisor as the Profiles tab (one launcher per profile, so a bot can't be started twice).
+    def _run_profile(self):
+        try:
+            return profiles.manager.get_active_profile()
+        except Exception:
+            return None
+
+    def _update_run_bot_status(self):
+        p = self._run_profile()
+        if p is None or not hasattr(self, "bot_status_dot"):
+            return
+        if profiles.supervisor.is_running(p.id):
+            self.bot_status_dot.config(text=tr("●  running"), fg=C["green"])
+        else:
+            self.bot_status_dot.config(text=tr("●  stopped"), fg=C["red"])
+
+    def _sync_run_tab_to_profile(self):
+        """Title, status and auto-restart box follow the selected profile."""
+        p = self._run_profile()
+        if p is None or not hasattr(self, "run_bot_title"):
+            return
+        self.run_bot_title.config(text=f"Bot: {p.name}")
+        self.bot_auto_restart.set(bool(p.auto_restart))
+        self._update_run_bot_status()
+
+    def _on_run_auto_restart_toggle(self):
+        p = self._run_profile()
+        if p is None:
+            return
+        p.auto_restart = bool(self.bot_auto_restart.get())
+        try:
+            profiles.manager.save_profile(p)
+        except Exception as e:
+            messagebox.showerror(tr("Couldn't save"), str(e))
+
     def _start_bot(self):
-        if not self._require_config():
+        p = self._run_profile()
+        if p is None:
+            messagebox.showwarning(tr("Not configured"), tr("No profile selected."))
             return
-        if not self._ensure_runas():
-            return
-        self.bot_proc.start()
-        self.bot_status_dot.config(text=tr("●  running"), fg=C["green"])
+        ok, msg = profiles.supervisor.start_instance(p.id)
+        if not ok:
+            messagebox.showerror("Start Error", msg)
+        self._update_run_bot_status()
+        if hasattr(self, "_refresh_profiles_list"):
+            self._refresh_profiles_list()
 
     def _stop_bot(self):
-        self.bot_proc.stop()
-        self.bot_status_dot.config(text=tr("●  stopped"), fg=C["red"])
+        p = self._run_profile()
+        if p is None:
+            return
+        profiles.supervisor.stop_instance(p.id)
+        self._update_run_bot_status()
+        if hasattr(self, "_refresh_profiles_list"):
+            self._refresh_profiles_list()
 
     def _start_webui(self):
         if not self._ensure_runas():
@@ -1271,13 +2220,48 @@ class ControlPanel(tk.Tk):
 
         btn_row = tk.Frame(f, bg=C["bg"])
         btn_row.pack(anchor="w")
-        tk.Button(btn_row, text="✅ Approve selected", command=lambda: self._resolve_selected(True),
+        tk.Button(btn_row, text="Approve selected", command=lambda: self._resolve_selected(True),
                    bg=C["green"], fg=C["bg"], relief="flat", padx=10, pady=6,
                    font=("sans-serif", 9, "bold"), cursor="hand2").pack(side="left")
-        tk.Button(btn_row, text="❌ Deny selected", command=lambda: self._resolve_selected(False),
+        tk.Button(btn_row, text="Deny selected", command=lambda: self._resolve_selected(False),
                    bg=C["red"], fg=C["bg"], relief="flat", padx=10, pady=6,
                    font=("sans-serif", 9, "bold"), cursor="hand2").pack(side="left", padx=8)
 
+        # ── approval policy / editable command list / usage display ───────
+        cfg = tk.Frame(f, bg=C["bg"])
+        cfg.pack(fill="x", pady=(12, 2))
+        tk.Label(cfg, text="Approval policy", bg=C["bg"], fg=C["text"],
+                 font=("sans-serif", 10, "bold")).pack(anchor="w")
+        self.approval_mode_var = tk.StringVar(value="ask")
+        mode_row = tk.Frame(cfg, bg=C["bg"])
+        mode_row.pack(anchor="w", pady=(2, 6))
+        tk.Label(mode_row, text="Mode:", bg=C["bg"], fg=C["text"]).pack(side="left")
+        self.approval_mode_combo = ttk.Combobox(mode_row, textvariable=self.approval_mode_var,
+                                                 values=["ask", "approve_all", "deny_all"],
+                                                 state="readonly", width=14)
+        self.approval_mode_combo.pack(side="left", padx=6)
+
+        self.show_cmds_var = tk.BooleanVar(value=False)
+        self.show_tools_var = tk.BooleanVar(value=False)
+        tog = tk.Frame(cfg, bg=C["bg"])
+        tog.pack(anchor="w", pady=(0, 6))
+        tk.Checkbutton(tog, text="Show commands used before reply",
+                       variable=self.show_cmds_var, bg=C["bg"], fg=C["text"],
+                       selectcolor=C["panel"]).pack(side="left", padx=(0, 12))
+        tk.Checkbutton(tog, text="Show tools used before reply",
+                       variable=self.show_tools_var, bg=C["bg"], fg=C["text"],
+                       selectcolor=C["panel"]).pack(side="left")
+
+        tk.Label(cfg, text="Commands requiring approval (one per line or comma):",
+                 bg=C["bg"], fg=C["text"], font=("monospace", 9)).pack(anchor="w", pady=(6, 2))
+        self.approval_cmds_text = tk.Text(cfg, height=6, bg=C["panel"], fg=C["text"],
+                                         insertbackground=C["text"], relief="flat", font=("monospace", 9))
+        self.approval_cmds_text.pack(fill="x")
+        tk.Button(cfg, text="Save policy", command=self._save_approval_policy,
+                  bg=C["accent"], fg=C["bg"], relief="flat", padx=10, pady=4,
+                  font=("sans-serif", 9, "bold"), cursor="hand2").pack(anchor="w", pady=(6, 0))
+
+        self._load_approval_policy()
         self.after(1000, self._refresh_approvals)
 
     def _refresh_approvals(self):
@@ -1305,6 +2289,38 @@ class ControlPanel(tk.Tk):
             approvals_store.resolve(req_id, approved)
         self._refresh_approvals()
 
+    def _load_approval_policy(self):
+        try:
+            env = load_env()
+            self.approval_mode_var.set(env.get("APPROVAL_MODE", "ask"))
+            self.show_cmds_var.set(env.get("SHOW_COMMANDS_USED", "").lower() in ("1", "true", "yes", "on"))
+            self.show_tools_var.set(env.get("SHOW_TOOLS_USED", "").lower() in ("1", "true", "yes", "on"))
+            cmds = env.get("APPROVAL_COMMANDS", "")
+            if not cmds:
+                try:
+                    import tools as _t
+                    cmds = ",".join(_t.DEFAULT_APPROVAL_COMMANDS)
+                except Exception:
+                    cmds = ""
+            self.approval_cmds_text.delete("1.0", "end")
+            self.approval_cmds_text.insert("1.0", cmds.replace(",", "\n"))
+        except Exception:
+            pass
+
+    def _save_approval_policy(self):
+        try:
+            env = load_env()
+            env["APPROVAL_MODE"] = self.approval_mode_var.get().strip()
+            env["SHOW_COMMANDS_USED"] = "true" if self.show_cmds_var.get() else ""
+            env["SHOW_TOOLS_USED"] = "true" if self.show_tools_var.get() else ""
+            raw = self.approval_cmds_text.get("1.0", "end-1c")
+            items = [x.strip() for x in raw.replace("\n", ",").split(",") if x.strip()]
+            env["APPROVAL_COMMANDS"] = ",".join(items)
+            save_env(env)
+            messagebox.showinfo("Saved", "Approval policy saved. Restart the bot to apply.")
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+
     # ── tab 5: integrations ──────────────────────────────────────────────────
 
     def _build_integrations_tab(self):
@@ -1316,10 +2332,19 @@ class ControlPanel(tk.Tk):
         tk.Button(top, text="↻ Rescan", command=self._refresh_integrations,
                    bg=C["panel2"], fg=C["text"], relief="flat", padx=10, pady=3,
                    cursor="hand2").pack(side="right")
-        tk.Label(f, text="Switch extra tool packs on or off. Changes are saved to .env "
-                          "(INTEGRATIONS) and take effect the next time the bot starts.",
+        tk.Label(f, text="Switch extra tool packs on or off and set their options. Each profile has its "
+                          "own settings; anything a profile hasn't changed follows the Global ones. "
+                          "Changes take effect the next time that bot starts.",
                   bg=C["bg"], fg=C["subtext"], font=("monospace", 9),
                   wraplength=680, justify="left").pack(anchor="w", pady=(0, 6))
+        scope_row = tk.Frame(f, bg=C["bg"])
+        scope_row.pack(anchor="w", pady=(0, 6))
+        tk.Label(scope_row, text="Editing settings for:", bg=C["bg"], fg=C["text"],
+                 font=("sans-serif", 9, "bold")).pack(side="left", padx=(0, 6))
+        self.int_scope_combo = ttk.Combobox(scope_row, state="readonly", width=44)
+        self.int_scope_combo.pack(side="left")
+        self.int_scope_combo.bind("<<ComboboxSelected>>", lambda _e: self._refresh_integrations())
+        self._refresh_int_scope_choices()
         self._build_api_token_box(f)
         self.integrations_status = tk.Label(f, text="", bg=C["bg"], fg=C["green"],
                                             font=("monospace", 9))
@@ -1402,12 +2427,51 @@ class ControlPanel(tk.Tk):
         tk.Button(row, text=tr("📋 Copy"), command=copy, bg=C["panel2"], fg=C["text"],
                    relief="flat", padx=10, pady=3, cursor="hand2").pack(side="left", padx=4)
 
+    # ── integration settings scope: one profile, or the global .env ──────────
+
+    GLOBAL_SCOPE_LABEL = "🌐 Global defaults (.env, every profile)"
+
+    def _active_profile_label(self) -> str:
+        try:
+            p = profiles.manager.get_active_profile()
+            return f"{p.icon} {p.name} ({p.id})"
+        except Exception:
+            return ""
+
+    def _refresh_int_scope_choices(self):
+        """Offer 'this profile' (the active one) and 'global'; keep the user's choice across profile switches."""
+        if not hasattr(self, "int_scope_combo"):
+            return
+        was_global = self.int_scope_combo.get() == self.GLOBAL_SCOPE_LABEL
+        mine = self._active_profile_label()
+        self.int_scope_combo["values"] = [x for x in (mine, self.GLOBAL_SCOPE_LABEL) if x]
+        self.int_scope_combo.set(self.GLOBAL_SCOPE_LABEL if (was_global or not mine) else mine)
+
+    def _int_scope_is_profile(self) -> bool:
+        combo = getattr(self, "int_scope_combo", None)
+        return bool(combo and combo.get() and combo.get() != self.GLOBAL_SCOPE_LABEL)
+
+    def _int_scope_name(self) -> str:
+        try:
+            return profiles.manager.get_active_profile().name
+        except Exception:
+            return "this profile"
+
+    def _int_env_path(self) -> str:
+        """The file the Integrations tab reads and writes right now (see integration_settings.py)."""
+        if self._int_scope_is_profile():
+            try:
+                return settings.profile_env_path(profiles.manager.get_active_profile().id)
+            except Exception:
+                pass
+        return ENV_PATH
+
     def _refresh_integrations(self):
         """Rebuild the cards from the integrations folder and the INTEGRATIONS value in .env."""
         for w in self.integrations_list.winfo_children():
             w.destroy()
         self.integration_vars = {}
-        rows = integrations.panel_entries(load_env().get("INTEGRATIONS", ""))
+        rows = integrations.panel_entries(settings.load_env(self._int_env_path()).get("INTEGRATIONS", ""))
         if not rows:
             tk.Label(self.integrations_list,
                      text=tr("No integrations were found in the integrations folder."),
@@ -1507,7 +2571,7 @@ class ControlPanel(tk.Tk):
 
     def _toggle_integration(self, name: str, var: tk.BooleanVar, repaint):
         try:
-            settings.set_enabled(name, var.get(), ENV_PATH)
+            settings.set_enabled(name, var.get(), self._int_env_path())
         except KeyError:
             var.set(not var.get())
             self._refresh_integrations()
@@ -1516,8 +2580,9 @@ class ControlPanel(tk.Tk):
         self._integrations_saved()
 
     def _integrations_saved(self):
+        where = self._int_scope_name() if self._int_scope_is_profile() else ".env"
         self.integrations_status.config(
-            text=tr("✓ saved to .env — restart the bot to apply"))
+            text=tr("✓ saved to {where} — restart the bot to apply", where=where))
         self.after(4000, lambda: self.integrations_status.config(text=""))
 
     # ── generated settings pages (an integration's PANEL "fields") ───────────
@@ -1534,7 +2599,7 @@ class ControlPanel(tk.Tk):
             for w in body.winfo_children():
                 w.destroy()
             try:
-                data = settings.get_settings(name, ENV_PATH)
+                data = settings.get_settings(name, self._int_env_path())
                 pg = next(p for p in data["pages"] if p["id"] == page_id)
             except (KeyError, StopIteration):
                 tk.Label(body, text=tr("This integration's settings could not be read. Press Rescan."),
@@ -1556,7 +2621,7 @@ class ControlPanel(tk.Tk):
                     msg.config(text=tr("Nothing changed."), fg=C["subtext"])
                     return
                 try:
-                    settings.set_settings(name, changes, ENV_PATH)
+                    settings.set_settings(name, changes, self._int_env_path())
                 except settings.SettingsError as e:
                     msg.config(text=tr(str(e)), fg=C["red"])
                     return
@@ -1567,7 +2632,7 @@ class ControlPanel(tk.Tk):
                 if not messagebox.askyesno(tr("Reset to defaults?"),
                                            tr("Every setting on this page goes back to its default.")):
                     return
-                settings.set_settings(name, {k: None for k in widgets}, ENV_PATH)
+                settings.set_settings(name, {k: None for k in widgets}, self._int_env_path())
                 render()
                 self._integrations_saved()
 
@@ -1668,12 +2733,12 @@ class ControlPanel(tk.Tk):
 
         def reload():
             lst.delete(0, "end")
-            for i in das.get_admin_ids(ENV_PATH):
+            for i in das.get_admin_ids(self._int_env_path()):
                 lst.insert("end", i)
 
         def add(_e=None):
             try:
-                das.add_admin(new_var.get(), ENV_PATH)
+                das.add_admin(new_var.get(), self._int_env_path())
             except settings.SettingsError as e:
                 msg.config(text=tr(str(e)))
                 return
@@ -1685,7 +2750,7 @@ class ControlPanel(tk.Tk):
         def remove():
             sel = [lst.get(i) for i in lst.curselection()]
             if sel:
-                das.remove_admins(sel, ENV_PATH)
+                das.remove_admins(sel, self._int_env_path())
                 reload()
                 self._integrations_saved()
 
@@ -1718,7 +2783,7 @@ class ControlPanel(tk.Tk):
                  "all": tr("Everything"), "none": tr("Nothing")}
 
         def cur_mode():
-            return das.get_mode(ENV_PATH)
+            return das.get_mode(self._int_env_path())
 
         top = tk.Frame(page, bg=C["panel2"])
         top.pack(anchor="w", pady=(0, 6))
@@ -1742,7 +2807,7 @@ class ControlPanel(tk.Tk):
                          wraplength=620, justify="left")
 
         def fill():
-            mode, overrides = cur_mode(), das.action_settings(ENV_PATH)
+            mode, overrides = cur_mode(), das.action_settings(self._int_env_path())
             keep = set(tree.selection())
             tree.delete(*tree.get_children())
             for a in actions:
@@ -1757,7 +2822,7 @@ class ControlPanel(tk.Tk):
 
         def on_mode(_e=None):
             chosen = next(k for k, v in modes.items() if v == mode_box.get())
-            das.set_mode(chosen, ENV_PATH)
+            das.set_mode(chosen, self._int_env_path())
             fill()
             self._integrations_saved()
 
@@ -1772,7 +2837,7 @@ class ControlPanel(tk.Tk):
             changes = {n: setting or "default" for n in sel}
             try:
                 try:
-                    das.set_action_settings(changes, actions, env_path=ENV_PATH)
+                    das.set_action_settings(changes, actions, env_path=self._int_env_path())
                 except das.NeedsConfirmation as e:
                     if not messagebox.askyesno(
                             tr("Skip approval?"),
@@ -1780,7 +2845,7 @@ class ControlPanel(tk.Tk):
                                "Let the bot do them without asking?", names=", ".join(e.actions))):
                         return
                     das.set_action_settings(changes, actions, confirm_destructive=True,
-                                            env_path=ENV_PATH)
+                                            env_path=self._int_env_path())
             except settings.SettingsError as e:
                 messagebox.showerror(tr("Couldn't save"), str(e))
                 return
@@ -1838,7 +2903,7 @@ class ControlPanel(tk.Tk):
 
         btn_row = tk.Frame(f, bg=C["bg"])
         btn_row.pack(fill="x", pady=(8, 0))
-        tk.Button(btn_row, text="🧹 Reset selected", command=self._reset_selected_sessions,
+        tk.Button(btn_row, text="Reset selected", command=self._reset_selected_sessions,
                    bg=C["red"], fg=C["bg"], relief="flat", padx=10, pady=6,
                    font=("sans-serif", 9, "bold"), cursor="hand2").pack(side="left")
         self.sessions_status = tk.Label(btn_row, text="", bg=C["bg"], fg=C["green"],
@@ -1934,6 +2999,12 @@ class ControlPanel(tk.Tk):
                         dot.config(text=tr("●  stopped"), fg=C["red"])
         except queue.Empty:
             pass
+        try:                                   # bots started from the Profiles tab log here too
+            for pid, line in profiles.supervisor.drain_logs():
+                self.log_box.insert("end", f"[{pid}] {line}", (pid,))
+                self.log_box.see("end")
+        except Exception:
+            pass
         self.after(150, self._drain_log_queue)
 
     # ── tab 7: updates ──────────────────────────────────────────────────────
@@ -1966,16 +3037,16 @@ class ControlPanel(tk.Tk):
         row = tk.Frame(f, bg=C["bg"])
         row.pack(anchor="w", pady=(10, 4))
         self.update_check_btn = tk.Button(
-            row, text="🔎 Check for updates", command=self._updates_check,
+            row, text="Check for updates", command=self._updates_check,
             bg=C["panel2"], fg=C["text"], relief="flat", padx=12, pady=6, cursor="hand2")
         self.update_check_btn.pack(side="left")
         self.update_install_btn = tk.Button(
-            row, text="⬇ Update now", command=self._updates_install, state="disabled",
+            row, text=" Update now", command=self._updates_install, state="disabled",
             bg=C["accent"], fg=C["bg"], relief="flat", padx=12, pady=6,
             font=("sans-serif", 9, "bold"), cursor="hand2")
         self.update_install_btn.pack(side="left", padx=8)
         self.update_rollback_btn = tk.Button(
-            row, text="↩ Roll back last update", command=self._updates_rollback,
+            row, text="Roll back last update", command=self._updates_rollback,
             bg=C["panel2"], fg=C["text"], relief="flat", padx=12, pady=6, cursor="hand2")
         self.update_rollback_btn.pack(side="left")
         self.update_status = tk.Label(f, text="", bg=C["bg"], fg=C["subtext"],
@@ -2155,6 +3226,10 @@ class ControlPanel(tk.Tk):
         self.destroy()
 
     def _on_close(self):
+        try:
+            profiles.supervisor.stop_all()     # don't leave Profiles-tab bots running without a log reader
+        except Exception:
+            pass
         self.bot_proc.stop()
         self.webui_proc.stop()
         self.stoat_proc.stop()

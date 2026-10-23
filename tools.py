@@ -77,6 +77,61 @@ SHELL_TIMEOUT = 60  # seconds
 OUTPUT_CAP = 6000   # chars — keep Discord-friendly
 
 # ── Destructive command detection ──────────────────────────────────────────
+DEFAULT_APPROVAL_COMMANDS = [
+    "rm", "rmdir", "shred", "mkfs", "fdisk", "parted", "wipefs",
+    "dd", "shutdown", "reboot", "halt", "poweroff", "sudo", "su",
+    "pip", "pip3", "apt", "apt-get", "dpkg", "snap", "flatpak",
+    "npm", "yarn", "pnpm", "systemctl", "service", "chown", "chmod",
+    "iptables", "ip6tables", "ufw", "nft", "kill", "killall", "pkill",
+    "del", "erase", "format", "diskpart", "cipher",
+    "remove-item", "clear-disk", "stop-computer", "restart-computer",
+    "reg", "taskkill", "net",
+]
+
+
+def get_approval_commands() -> list[str]:
+    """The list of command tokens that require approval before running.
+
+    Defaults to DEFAULT_APPROVAL_COMMANDS. Override/replace by setting the
+    ``APPROVAL_COMMANDS`` env var to a comma (or semicolon) separated list,
+    e.g. ``APPROVAL_COMMANDS=rm,sudo,apt``. An empty value falls back to the
+    defaults so a stray empty line can't silently disable the gate."""
+    raw = os.environ.get("APPROVAL_COMMANDS", "").strip()
+    if raw:
+        items = [x.strip().lower() for x in raw.replace(";", ",").split(",") if x.strip()]
+    else:
+        items = list(DEFAULT_APPROVAL_COMMANDS)
+    out = []
+    seen = set()
+    for x in items:
+        if x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
+
+
+def _approval_mode_raw() -> str:
+    return os.environ.get("APPROVAL_MODE", "ask").strip().lower().replace(" ", "_").replace("-", "_")
+
+
+def approval_mode() -> str:
+    """How the approval gate behaves: 'ask' (prompt), 'approve_all' or 'deny_all'."""
+    v = _approval_mode_raw()
+    if v in ("approve_all", "approveall", "approve"):
+        return "approve_all"
+    if v in ("deny_all", "denyall", "deny"):
+        return "deny_all"
+    return "ask"
+
+
+def show_commands_used() -> bool:
+    return os.environ.get("SHOW_COMMANDS_USED", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def show_tools_used() -> bool:
+    return os.environ.get("SHOW_TOOLS_USED", "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def is_destructive(command: str) -> bool:
     """
     Returns True if the command looks destructive and needs user approval.
@@ -84,31 +139,21 @@ def is_destructive(command: str) -> bool:
     anywhere in the string, to avoid false positives like 'echo rm done'.
     Covers both Unix and Windows/PowerShell destructive command names, since
     the same regex runs regardless of which platform is actually executing.
+    The token list is configurable via get_approval_commands().
     """
-    # Tokens that are destructive when they appear as a command name
-    _CMDS = re.compile(
-        r"(?:^|[|;&`(]\s*)"          # start, pipe, semicolon, subshell
-        r"(?:sudo\s+)?"              # optionally prefixed with sudo
-        r"("
-        r"rm|rmdir|shred|mkfs|fdisk|parted|wipefs"
-        r"|dd"
-        r"|shutdown|reboot|halt|poweroff"
-        r"|sudo|su"
-        r"|pip3?|apt(?:-get)?|dpkg|snap|flatpak"
-        r"|npm|yarn|pnpm"
-        r"|systemctl|service"
-        r"|chown|chmod"
-        r"|iptables|ip6tables|ufw|nft"
-        r"|kill|killall|pkill"
-        r"|del|erase|format|diskpart|cipher"
-        r"|remove-item|clear-disk|stop-computer|restart-computer"
-        r"|reg|taskkill|net"
-        r")\b",
-        re.IGNORECASE | re.MULTILINE,
-    )
+    cmds = get_approval_commands()
+    if cmds:
+        alt = "|".join(re.escape(c) for c in cmds)
+        cmd_re = re.compile(
+            r"(?:^|[|;&`(]\s*)" + r"(?:" + alt + r")\b",
+            re.IGNORECASE | re.MULTILINE,
+        )
+    else:
+        cmd_re = None
     # Pipe-to-shell pattern anywhere in the command
     _PIPE_SHELL = re.compile(r"\|\s*(ba)?sh\b|\|\s*(iex|invoke-expression)\b", re.IGNORECASE)
-    return bool(_CMDS.search(command)) or bool(_PIPE_SHELL.search(command))
+    destructive = bool(cmd_re and cmd_re.search(command)) or bool(_PIPE_SHELL.search(command))
+    return destructive
 
 
 # ── PTY-based shell exec (Linux/macOS) ──────────────────────────────────────
@@ -603,6 +648,13 @@ async def request_approval(channel, command: str, timeout: int = 60) -> bool:
     """
     import approvals as approvals_store
 
+    # Honor the configured approval mode.
+    mode = approval_mode()
+    if mode == "approve_all":
+        return True
+    if mode == "deny_all":
+        return False
+
     # Non-Discord platforms (e.g. Stoat) expose ask_approval(); race their
     # in-chat yes/no reply against the control panel's Approvals tab.
     if hasattr(channel, "ask_approval"):
@@ -714,7 +766,7 @@ LOCAL_TOOL_SCHEMAS = [
             "Run a shell command on the owner's computer (starts in the agent's workspace). "
             "Returns stdout, exit_code, and cwd as structured fields. "
             "Destructive commands (rm, sudo, apt install, etc.) will be sent "
-            "to Discord for user approval before running."
+            "to Discord for user approval before running. If a command may take >30 seconds, run it in the background by redirecting its output and ending with & (linux/macos), e.g. `long_cmd > /tmp/out.log 2>&1 &`, then read the log later. Without the redirect the background job loses its output. Never background a command when you are checking for errors or syntax."
         ),
         "input_schema": {
             "type": "object",
@@ -729,8 +781,8 @@ LOCAL_TOOL_SCHEMAS = [
         "description": (
             "Run a shell command with sudo (root/elevated privileges). "
             "ALWAYS requires user approval via Discord before running — "
-            "use this only when a normal run_shell fails due to permissions. "
-            "Returns stdout, exit_code, and cwd."
+            "use this only when a normal run_shell fails due to permissions and you do not want to use sudo in normal run_shell. "
+            "Returns stdout, exit_code, and cwd. If a command may take >30 seconds, run it in the background by redirecting its output and ending with & (linux/macos), e.g. `long_cmd > /tmp/out.log 2>&1 &`, then read the log later. Without the redirect the background job loses its output. Never background a command when you are checking for errors or syntax."
         ),
         "input_schema": {
             "type": "object",

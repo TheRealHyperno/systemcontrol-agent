@@ -9,7 +9,7 @@ before anything is installed:
     python3 version.py
 """
 
-SYSTEMC_VERSION = "Drovex"   # codename and/or version
+SYSTEMC_VERSION = "Aurelia"   # codename and/or version
 SYSTEMC_STAGE = "beta"       # "beta", "release", ... ("" to leave it out)
 
 
