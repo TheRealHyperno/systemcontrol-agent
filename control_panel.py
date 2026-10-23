@@ -2346,15 +2346,9 @@ class ControlPanel(tk.Tk):
             self.voice_call_var = tk.BooleanVar(value=venabled)
         tk.Label(f, text="Experiments (unstable)", bg=C["bg"], fg=C["text"],
                  font=("sans-serif", 11, "bold")).pack(anchor="w", pady=(14, 6))
-        tk.Label(f, text="JavaScript integration support is EXPERIMENTAL and off by default. "
-                          "It is not implemented in the shipped bot yet; enabling it only records "
-                          "your preference. You must install Node.js and the required npm "
-                          "dependencies before anything will run.",
+        tk.Label(f, text="Experimental features. Enable at your own risk.",
                  bg=C["bg"], fg=C["subtext"], font=("monospace", 9), wraplength=680,
                  justify="left").pack(anchor="w", pady=(0, 8))
-        tk.Checkbutton(f, text="Enable JS integrations (experimental)",
-                       variable=self.js_integrations_var, bg=C["bg"], fg=C["text"],
-                       selectcolor=C["panel"]).pack(anchor="w", pady=(0, 8))
         tk.Checkbutton(f, text="Enable experimental voice calls (!voicecall)",
                        variable=self.voice_call_var, bg=C["bg"], fg=C["text"],
                        selectcolor=C["panel"]).pack(anchor="w", pady=(0, 8))
@@ -2375,7 +2369,6 @@ class ControlPanel(tk.Tk):
     def _save_experiments(self):
         try:
             env = load_env()
-            env["JS_INTEGRATIONS_ENABLED"] = "true" if self.js_integrations_var.get() else ""
             env["VOICE_CALL_ENABLED"] = "true" if self.voice_call_var.get() else ""
             save_env(env)
             messagebox.showinfo("Saved", "Experiment settings saved. Restart the bot to apply.")
