@@ -1,0 +1,10 @@
+target/
+dist/target/
+*.class
+workspace/
+.env
+.history/
+.memory/
+.approvals/
+.profiles/
+*.log

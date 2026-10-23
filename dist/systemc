@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# systemc — launcher for SystemC Drovex (Java).
+#   systemc [run|panel|models|version]
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+[ -L "$SOURCE" ] && SOURCE="$(readlink -f "$SOURCE")"   # follow the ~/.local/bin symlink
+HERE="$(cd "$(dirname "$SOURCE")" && pwd)"               # .../bin
+PREFIX="$(cd "$HERE/.." && pwd)"                              # install root
+JAR="$(ls -1 "$PREFIX"/lib/systemc-java-*.jar 2>/dev/null | head -n1 || true)"
+[ -n "$JAR" ] || { echo "error: no systemc-java-*.jar in $PREFIX/lib" >&2; exit 1; }
+
+find_java() {
+  if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/java" ]; then echo "$JAVA_HOME/bin/java"; return 0; fi
+  if command -v java >/dev/null 2>&1; then command -v java; return 0; fi
+  for c in /usr/lib/jvm/*/bin/java; do
+    [ -x "$c" ] && { echo "$c"; return 0; }
+  done
+  for v in 21 25 17; do
+    for c in /usr/lib/jvm/java-${v}-openjdk/bin/java; do
+      [ -x "$c" ] && { echo "$c"; return 0; }
+    done
+  done
+  echo "error: java (JDK 21+) not found. Try: sudo dnf install java-21-openjdk" >&2
+  exit 1
+}
+
+JAVA_BIN="$(find_java)"
+cd "$PREFIX"    # state files (.env, .history, .memory, ...) live next to the install
+
+cmd="${1:-run}"
+case "$cmd" in
+  run)     exec "$JAVA_BIN" -jar "$JAR" "$@" ;;
+  panel)   shift 2>/dev/null || true; exec "$JAVA_BIN" -cp "$JAR" systemc.ControlPanel ;;
+  models)  exec "$JAVA_BIN" -cp "$JAR" systemc.Providers models ;;
+  version) echo "SystemC Drovex (Java port) — python parity alpha"; echo "jar: $JAR" ;;
+  jar)     echo "$JAR" ;;
+  *) echo "usage: systemc [run|panel|models|version]"; exit 1 ;;
+esac

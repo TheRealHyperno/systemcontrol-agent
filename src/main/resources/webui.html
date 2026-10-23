@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SystemC — Console</title>
+<link rel="icon" type="image/png" href="/favicon.png">
+<style>
+  /* macOS-style UI: rounded, translucent, soft shadow, traffic-light window */
+  :root {
+    --bg1: #eef2ff; --bg2: #fdf2f8;
+    --glass: rgba(255,255,255,.72);
+    --border: rgba(0,0,0,.08);
+    --text: #1d1d1f; --muted: #6e6e73;
+    --accent: #0a84ff; --green: #30d158; --red: #ff453a; --orange: #ff9f0a;
+    --radius: 16px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+    color: var(--text);
+    background: linear-gradient(135deg, var(--bg1), var(--bg2) 55%, #f3f0ff);
+    display: flex; align-items: center; justify-content: center; padding: 24px;
+  }
+  .window {
+    width: min(880px, 100%); height: min(680px, calc(100vh - 48px));
+    display: flex; flex-direction: column;
+    background: var(--glass); backdrop-filter: blur(18px) saturate(1.4);
+    border: 1px solid var(--border); border-radius: 20px;
+    box-shadow: 0 24px 60px rgba(20, 30, 80, .18), 0 2px 8px rgba(0,0,0,.06);
+    overflow: hidden;
+  }
+  .titlebar {
+    display: flex; align-items: center; gap: 10px; padding: 12px 16px;
+    background: rgba(255,255,255,.5); border-bottom: 1px solid var(--border);
+  }
+  .lights { display: flex; gap: 8px; }
+  .lights span { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+  .lights .r { background: #ff5f57; border: .5px solid #e0443e; }
+  .lights .y { background: #febc2e; border: .5px solid #d89e24; }
+  .lights .g { background: #28c840; border: .5px solid #1aab29; }
+  .title { font-weight: 600; color: var(--muted); letter-spacing: .2px; }
+  .title b { color: var(--text); }
+  .chat { flex: 1; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 10px; }
+  .msg { max-width: 72%; padding: 10px 14px; border-radius: 18px; white-space: pre-wrap; word-wrap: break-word;
+         box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+  .msg.me  { align-self: flex-end; background: linear-gradient(180deg, #3478f6, #2f6ceb); color: #fff;
+             border-bottom-right-radius: 6px; }
+  .msg.bot { align-self: flex-start; background: rgba(255,255,255,.95); border: 1px solid var(--border);
+             border-bottom-left-radius: 6px; }
+  .msg.bot code, .msg.me code { font: 12px/1.4 "JetBrains Mono", ui-monospace, monospace;
+             background: rgba(0,0,0,.06); padding: 1px 4px; border-radius: 5px; }
+  .composer {
+    display: flex; gap: 10px; padding: 14px 16px; background: rgba(255,255,255,.55);
+    border-top: 1px solid var(--border);
+  }
+  input#q {
+    flex: 1; border: 1px solid transparent; background: #ececf1; color: var(--text);
+    border-radius: 999px; padding: 11px 18px; font-size: 14px; outline: none;
+    transition: box-shadow .15s, border-color .15s;
+  }
+  input#q:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(10,132,255,.25); background: #fff; }
+  button.send {
+    width: 42px; height: 42px; border-radius: 50%; border: none; cursor: pointer;
+    background: linear-gradient(180deg, #3478f6, #2f6ceb); color: #fff; font-size: 17px;
+    box-shadow: 0 4px 12px rgba(47,108,235,.35); transition: transform .1s, filter .15s;
+  }
+  button.send:hover { filter: brightness(1.06); }
+  button.send:active { transform: scale(.94); }
+  button.send:disabled { filter: grayscale(.6); opacity: .6; cursor: default; }
+  .hint { text-align: center; color: var(--muted); font-size: 12px; padding-bottom: 8px; }
+  @media (prefers-color-scheme: dark) {
+    :root { --glass: rgba(30,30,34,.66); --text: #f2f2f7; --muted: #98989f; --border: rgba(255,255,255,.09);
+            --bg1: #101423; --bg2: #1c1030; }
+    .msg.bot { background: rgba(50,50,56,.92); }
+    input#q { background: rgba(255,255,255,.08); color: var(--text); }
+    input#q:focus { background: rgba(255,255,255,.12); }
+  }
+</style>
+</head>
+<body>
+  <div class="window">
+    <div class="titlebar">
+      <div class="lights"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+      <img src="/logo.png" alt="SystemC" style="height:26px; border-radius:6px; box-shadow:0 1px 4px rgba(0,0,0,.15);">
+      <div class="title"><b>SystemC</b> Drovex (Java) — console</div>
+    </div>
+    <div class="chat" id="chat"></div>
+    <form class="composer" id="f">
+      <input id="q" placeholder="Message SystemC…" autocomplete="off" autofocus>
+      <button class="send" type="submit">➤</button>
+    </form>
+    <div class="hint">local &amp; private — runs on your machine via Ollama · <span id="model"></span></div>
+  </div>
+<script>
+const chat = document.getElementById('chat'), q = document.getElementById('q'), history = [];
+function add(role, text) {
+  const d = document.createElement('div');
+  d.className = 'msg ' + (role === 'user' ? 'me' : 'bot');
+  d.textContent = text;
+  chat.appendChild(d);
+  chat.scrollTop = chat.scrollHeight;
+  return d;
+}
+// conversation state is held server-side in this single-user console: one session.
+let sessionId = 'webui-' + Date.now();
+async function send(text) {
+  add('user', text);
+  const bubble = add('assistant', '…');
+  const reqBody = {
+    model: (window.__model || 'llama3.2'),
+    stream: true,
+    messages: [...history, { role: 'user', content: text }]
+  };
+  const res = await fetch('/ollama/chat', { method: 'POST', body: JSON.stringify(reqBody) });
+  let text2 = '';
+  if (res.ok && res.headers.get('content-type').includes('ndjson')) {
+    const reader = res.body.getReader(), dec = new TextDecoder();
+    const lines = [];
+    let lineDone = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      lineDone += dec.decode(value, { stream: true });
+      let i;
+      while ((i = lineDone.indexOf('\n')) >= 0) {
+        const l = lineDone.slice(0, i); lineDone = lineDone.slice(i + 1);
+        if (!l.trim()) continue;
+        try {
+          const j = JSON.parse(l);
+          const piece = (j.message && (j.message.content || j.message.reasoning)) || '';
+          if (piece) { text2 += piece; bubble.textContent = text2; chat.scrollTop = chat.scrollHeight; }
+        } catch (e) {}
+      }
+    }
+    history.push({ role: 'user', content: text });
+    history.push({ role: 'assistant', content: text2 });
+  } else {
+    const j = await res.json().catch(() => ({}));
+    text2 = (j.message && j.message.content) || ('⚠️ ' + (j.error || res.status));
+    bubble.textContent = text2;
+    history.push({ role: 'user', content: text });
+    history.push({ role: 'assistant', content: text2 });
+  }
+}
+document.getElementById('f').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const text = q.value.trim();
+  if (!text || window.__busy) return;
+  q.value = ''; window.__busy = true;
+  try { await send(text); } catch (err) { add('assistant', '⚠️ ' + err); }
+  window.__busy = false;
+});
+(async () => {
+  try {
+    const cfg = await (await fetch('/config')).json();
+    document.getElementById('model').textContent = 'workdir: ' + cfg.workdir;
+  } catch (_) {}
+  add('assistant', "👋 Local console ready. This talks straight to your Ollama server; " +
+    "Discord/Stoat bots and the trained agent run on the same Java backend.");
+})();
+</script>
+</body>
+</html>
