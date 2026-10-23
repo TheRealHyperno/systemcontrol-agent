@@ -82,6 +82,19 @@ Terminal=false
 Categories=Utility;Development;
 Keywords=systemc;agent;bot;ollama;
 StartupWMClass=SystemC
+Actions=console;run;
+
+[Desktop Action console]
+Name=Open chat console (web UI)
+Exec=xdg-open http://127.0.0.1:7842
+Icon=webbrowser-app
+Terminal=false
+
+[Desktop Action run]
+Name=Start / stop the bots
+Exec=$BIN_DIR/systemc run
+Icon=utilities-terminal
+Terminal=true
 EOF
   command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$APPS_DIR" 2>/dev/null || true
   say "App-menu entry created ($APPS_DIR/systemc.desktop)"
