@@ -132,3 +132,39 @@ this, and the admin IDs, in the control panel: Integrations tab → Discord Admi
   role **above** the roles it should manage.
 - Optional: turn on **Server Members Intent** in the Discord developer portal and in `bot.py`
   (`intents.members = True`) to enable name search; without it, use user IDs / @mentions.
+
+## JavaScript integrations (experimental)
+
+JavaScript integration support is opt-in and unstable. To enable it:
+
+1. Check the "Enable JS integrations (experimental)" box in the control panel
+   Experiments tab and save, or set `JS_INTEGRATIONS_ENABLED=true` in `.env`.
+2. Install Node.js (18+) and any npm packages your integration needs.
+3. Optionally restrict which files load with `JS_INTEGRATIONS=hello_js,other` (file
+   name or stem, comma/semicolon separated; default loads all `*.js` files).
+
+JS integrations live as `*.js` files in `integrations/` or `integrations/js/` and
+must not start with `_`. Each file implements a two-command protocol:
+
+  node <file> manifest   -> prints one JSON manifest on stdout
+  echo '<envelope>' | node <file> run -> prints one JSON result on stdout
+
+Manifest:
+  {
+    "name": "unique_name",
+    "description": "...",
+    "prompt": "optional system-prompt text",
+    "tools": [ { "name", "description", "input_schema" } ... ]
+  }
+
+Call envelope:
+  { "tool": "tool_name", "args": {...},
+    "context": { "author_id", "author_name", "platform" } }
+
+Things JS integrations do NOT get:
+  - `ctx.confirm` / `ctx.send` (they are stateless subprocesses)
+  - Python settings helpers
+  - control-panel metadata beyond the manifest name (no auto-generated panel entry)
+
+Log lines printed to stderr are captured and shown on failure. Non-zero exit or
+invalid JSON becomes a tool error reported back to the model.

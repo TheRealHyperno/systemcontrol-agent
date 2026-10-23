@@ -435,5 +435,33 @@ def build(ctx: Context, reserved: set[str] | None = None) -> Toolset:
                 prompts.append(f"## Integration: {getattr(mod, 'NAME', name)}\n{mod.PROMPT.strip()}")
         except Exception as e:
             print(f"[integrations] {name}: error while building tools: {e}", flush=True)
+    # Experimental JavaScript integrations (opt-in).
+    try:
+        from integrations import _js_runtime as _jsrt
+        if _jsrt.enabled():
+            for _name, _js in _jsrt.discover_js().items():
+                try:
+                    _avail = getattr(_js, "available", None)
+                    if _avail is not None and not _avail(ctx):
+                        continue
+                    _added = 0
+                    for _schema in getattr(_js, "TOOLS", []):
+                        if not _valid_schema(_schema):
+                            print(f"[integrations] {_name}: skipped malformed tool schema", flush=True)
+                            continue
+                        if _schema["name"] in taken:
+                            print(f"[integrations] {_name}: tool name '{_schema['name']}' already taken — skipped", flush=True)
+                            continue
+                        taken.add(_schema["name"])
+                        ts.schemas.append(_schema)
+                        ts._owner[_schema["name"]] = _js
+                        _added += 1
+                    if _added and getattr(_js, "PROMPT", ""):
+                        prompts.append(f"## Integration: {getattr(_js, 'NAME', _name)}\n{_js.PROMPT.strip()}")
+                except Exception as _e:
+                    print(f"[integrations] {_name}: error while building JS tools: {_e}", flush=True)
+    except Exception as _e:
+        print(f"[integrations] JS runtime unavailable: {_e}", flush=True)
+
     ts.prompt = "\n\n".join(prompts)
     return ts
