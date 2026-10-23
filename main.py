@@ -24,6 +24,14 @@ import asyncio
 from pathlib import Path
 
 
+def _handle_tui_flag(argv: list[str]) -> None:
+    if "--tui" not in argv:
+        return
+    import runpy
+    script = Path(__file__).parent / "tui_panel.py"
+    raise SystemExit(runpy.run_path(str(script), run_name="__main__"))
+
+
 def _handle_service_flags(argv: list[str]) -> None:
     """--install-service / --uninstall-service: hand off to systemd_service.py and exit."""
     if not any(a in argv for a in ("--install-service", "--uninstall-service")):
@@ -205,5 +213,7 @@ async def main():
 
 
 if __name__ == "__main__":
-    _handle_service_flags(sys.argv[1:])
+    argv = sys.argv[1:]
+    _handle_tui_flag(argv)
+    _handle_service_flags(argv)
     asyncio.run(main())
