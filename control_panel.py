@@ -264,6 +264,7 @@ class ControlPanel(tk.Tk):
         self._setup_pid = None
         self.token_var = tk.StringVar(value=env.get("DISCORD_BOT_TOKEN", ""))
         self.channels_var = tk.StringVar(value=env.get("ALLOWED_CHANNEL_IDS", ""))
+        self.channels_all_var = tk.BooleanVar(value=not env.get("ALLOWED_CHANNEL_IDS", "").strip())
         self.mode_var = tk.StringVar(value=env.get("BOT_MODE", "WAKEWORD"))
         self.wake_var = tk.StringVar(value=env.get("WAKE_WORD", "hey claw"))
         self.model_var = tk.StringVar(value=env.get("AGENT_MODEL", "llama3.2"))
@@ -309,6 +310,7 @@ class ControlPanel(tk.Tk):
         # Stoat
         self.stoat_token_var    = tk.StringVar(value=env.get("STOAT_BOT_TOKEN", ""))
         self.stoat_channels_var = tk.StringVar(value=env.get("STOAT_ALLOWED_CHANNEL_IDS", ""))
+        self.stoat_channels_all_var = tk.BooleanVar(value=not env.get("STOAT_ALLOWED_CHANNEL_IDS", "").strip())
         self.stoat_mode_var     = tk.StringVar(value=env.get("STOAT_BOT_MODE", "WAKEWORD"))
         self.stoat_wake_var     = tk.StringVar(value=env.get("STOAT_WAKE_WORD", "hey claw"))
 
@@ -573,6 +575,7 @@ class ControlPanel(tk.Tk):
         self._setup_pid = p.id
         self.token_var.set(p.discord_token)
         self.channels_var.set(p.discord_channels)
+        self.channels_all_var.set(not p.discord_channels.strip())
         self.mode_var.set(p.discord_bot_mode)
         self.wake_var.set(p.discord_wake_word)
         self.model_var.set(p.agent_model)
@@ -587,6 +590,7 @@ class ControlPanel(tk.Tk):
         self.allow_elevated_var.set(p.agent_allow_elevated == "1")
         self.stoat_token_var.set(p.stoat_token)
         self.stoat_channels_var.set(p.stoat_channels)
+        self.stoat_channels_all_var.set(not p.stoat_channels.strip())
         self.stoat_mode_var.set(p.stoat_bot_mode)
         self.stoat_wake_var.set(p.stoat_wake_word)
         keys = ([p.api_key] if p.api_key else []) + list(p.api_keys)
@@ -1127,6 +1131,8 @@ class ControlPanel(tk.Tk):
         label("Right-click a channel in Discord → Copy Channel ID (enable Developer Mode "
               "in Discord settings first). Comma-separate multiple.")
         entry(self.channels_var)
+        tk.Checkbutton(f, text="Accept from all channels", variable=self.channels_all_var,
+                       bg=C["bg"], fg=C["text"], selectcolor=C["panel"]).pack(anchor="w", pady=(0, 4))
 
         tk.Label(f, text="Bot mode", bg=C["bg"], fg=C["text"],
                   font=("sans-serif", 10, "bold")).pack(anchor="w", pady=(10, 0))
@@ -1154,6 +1160,8 @@ class ControlPanel(tk.Tk):
         tk.Label(f, text="Stoat channel ID(s)", bg=C["bg"], fg=C["text"],
                   font=("sans-serif", 10, "bold")).pack(anchor="w", pady=(8, 0))
         entry(self.stoat_channels_var)
+        tk.Checkbutton(f, text="Accept from all channels", variable=self.stoat_channels_all_var,
+                       bg=C["bg"], fg=C["text"], selectcolor=C["panel"]).pack(anchor="w", pady=(0, 4))
         tk.Label(f, text="Stoat bot mode", bg=C["bg"], fg=C["text"],
                   font=("sans-serif", 10, "bold")).pack(anchor="w", pady=(8, 0))
         stoat_row = tk.Frame(f, bg=C["bg"])
@@ -1557,7 +1565,7 @@ class ControlPanel(tk.Tk):
             env.pop(k, None)
         env.update({
             "DISCORD_BOT_TOKEN": self.token_var.get().strip(),
-            "ALLOWED_CHANNEL_IDS": self.channels_var.get().strip(),
+            "ALLOWED_CHANNEL_IDS": "" if self.channels_all_var.get() else self.channels_var.get().strip(),
             "BOT_MODE": self.mode_var.get(),
             "WAKE_WORD": self.wake_var.get().strip() or "hey claw",
             "AGENT_NAME": " ".join(self.agent_name_var.get().split()),
@@ -1577,7 +1585,7 @@ class ControlPanel(tk.Tk):
                 env["OLLAMA_API_KEYS"] = ",".join(self.api_keys[1:])     # fallbacks, in order
         if has_stoat:
             env["STOAT_BOT_TOKEN"]            = self.stoat_token_var.get().strip()
-            env["STOAT_ALLOWED_CHANNEL_IDS"]  = self.stoat_channels_var.get().strip()
+            env["STOAT_ALLOWED_CHANNEL_IDS"]  = "" if self.stoat_channels_all_var.get() else self.stoat_channels_var.get().strip()
             env["STOAT_BOT_MODE"]             = self.stoat_mode_var.get()
             env["STOAT_WAKE_WORD"]            = self.stoat_wake_var.get().strip() or "hey claw"
 
@@ -1600,12 +1608,12 @@ class ControlPanel(tk.Tk):
         data.update({
             "discord_enabled": has_discord,
             "discord_token": self.token_var.get().strip(),
-            "discord_channels": self.channels_var.get().strip(),
+            "discord_channels": "" if self.channels_all_var.get() else self.channels_var.get().strip(),
             "discord_bot_mode": self.mode_var.get(),
             "discord_wake_word": self.wake_var.get().strip() or "hey claw",
             "stoat_enabled": has_stoat,
             "stoat_token": self.stoat_token_var.get().strip(),
-            "stoat_channels": self.stoat_channels_var.get().strip(),
+            "stoat_channels": "" if self.stoat_channels_all_var.get() else self.stoat_channels_var.get().strip(),
             "stoat_bot_mode": self.stoat_mode_var.get(),
             "stoat_wake_word": self.stoat_wake_var.get().strip() or "hey claw",
             "agent_model": self.model_var.get().strip() or ("gpt-oss:120b" if cloud else "llama3.2"),
