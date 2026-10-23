@@ -58,6 +58,83 @@ intents.message_content = True
 client = discord.Client(intents=intents)
 agent  = Agent()
 
+# ── Experimental voice call mode ────────────────────────────────────────────
+import os as _vos
+_VOICE_ENABLED = _vos.environ.get("VOICE_CALL_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
+_voice_tasks = {}
+
+async def _voice_loop(message, channel):
+    import io, wave, tempfile, discord, asyncio, speech_recognition as sr
+    from gtts import gTTS
+    try:
+        from discord.ext.voice_recv import VoiceRecvClient, BasicSink
+    except Exception as e:
+        await channel.send(f"voice_recv missing: {e}")
+        return
+    vc = None
+    try:
+        voice_ch = message.author.voice.channel if message.author.voice else None
+        if voice_ch is None:
+            await channel.send("Join a voice channel first, then run !voicecall.")
+            return
+        vc = await voice_ch.connect(cls=VoiceRecvClient)
+        await channel.send(f"Voice call started in **{voice_ch.name}**. Say something; say " + chr(34) + "hang up" + chr(34) + " to stop.")
+
+        for _turn in range(20):
+            buf = {"pcm": bytearray(), "last": 0.0}
+            import time
+            def sink_cb(user, data):
+                if user is None or user == client.user:
+                    return
+                buf["pcm"].extend(data.pcm)
+                buf["last"] = time.time()
+
+            sink = BasicSink(sink_cb)
+            vc.listen(sink)
+            start = time.time()
+            await asyncio.sleep(0.5)
+            while time.time() - start < 15:
+                await asyncio.sleep(0.2)
+                if buf["pcm"] and (time.time() - buf["last"] > 1.2):
+                    break
+            vc.stop_listening()
+            pcm = bytes(buf["pcm"])
+            if not pcm or len(pcm) < 48000:
+                continue
+            fd, wav_path = tempfile.mkstemp(suffix=".wav")
+            os.close(fd)
+            with wave.open(wav_path, "wb") as w:
+                w.setnchannels(2); w.setsampwidth(2); w.setframerate(48000)
+                w.writeframes(pcm)
+            text = None
+            try:
+                r = sr.Recognizer()
+                with sr.AudioFile(wav_path) as src:
+                    audio = r.record(src)
+                text = r.recognize_google(audio)
+            except Exception:
+                text = None
+            try:
+                os.remove(wav_path)
+            except OSError:
+                pass
+            if not text:
+                continue
+            await channel.send(f"heard: {text}")
+            if "hang up" in text.lower() or "hangup" in text.lower():
+                break
+            try:
+                await agent.run_turn(channel, text, [], author={"id": message.author.id, "name": message.author.display_name})
+            except Exception as e:
+                await channel.send(f"agent error: {e}")
+                continue
+        await channel.send("Voice call ended.")
+    finally:
+        if vc is not None and vc.is_connected():
+            await vc.disconnect()
+        _voice_tasks.pop(message.guild.id if message.guild else message.channel.id, None)
+
+
 
 def _channel_label(message: discord.Message) -> str:
     """Human-readable name for the control panel's Sessions tab."""
@@ -157,6 +234,32 @@ async def on_message(message: discord.Message):
                 out = out[-1900:]
             await message.channel.send(f"```\n{out}\n```\nexit: `{exit_code}`")
         return
+
+    # ── !voicecall / !voicehangup (experimental) ─────────────────────────────
+    if (
+        _VOICE_ENABLED
+        and message.author != client.user
+        and (not ALLOWED_CHANNEL_IDS or message.channel.id in ALLOWED_CHANNEL_IDS)
+    ):
+        content = message.content.strip().lower()
+        if content == "!voicecall":
+            gid = message.guild.id if message.guild else message.channel.id
+            if gid in _voice_tasks:
+                await message.channel.send("A voice call is already running.")
+            else:
+                import asyncio as _a
+                task = _a.create_task(_voice_loop(message, message.channel))
+                _voice_tasks[gid] = task
+            return
+        if content == "!voicehangup":
+            gid = message.guild.id if message.guild else message.channel.id
+            t = _voice_tasks.pop(gid, None)
+            if t:
+                t.cancel()
+            if message.guild and message.guild.voice_client:
+                await message.guild.voice_client.disconnect()
+            await message.channel.send("Voice call stopped.")
+            return
 
     # ── /reset — clear this channel's conversation context ─────────────────
     # Only wipes the per-channel chat history (.history/*.json, plus the cached
