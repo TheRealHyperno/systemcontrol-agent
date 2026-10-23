@@ -10,6 +10,10 @@ Which bots start is determined by which tokens are present in .env:
   - Neither set             → setup wizard launches
 
 Run with: python main.py
+
+To start the bot(s) at login/boot without this script running, hand them to systemd:
+  python main.py --install-service [--profile <id>] [--linger]
+  python main.py --uninstall-service [--profile <id>]
 """
 
 from __future__ import annotations
@@ -18,6 +22,24 @@ import os
 import sys
 import asyncio
 from pathlib import Path
+
+
+def _handle_service_flags(argv: list[str]) -> None:
+    """--install-service / --uninstall-service: hand off to systemd_service.py and exit."""
+    if not any(a in argv for a in ("--install-service", "--uninstall-service")):
+        return
+    import subprocess
+    action = "install" if "--install-service" in argv else "uninstall"
+    script = Path(__file__).parent / "systemd_service.py"
+    args = [os.environ.get("SYSTEMC_PYTHON") or sys.executable or "python3", str(script), action]
+    if "--profile" in argv:
+        try:
+            args += ["--profile", argv[argv.index("--profile") + 1]]
+        except ValueError:
+            pass
+    if "--linger" in argv and action == "install":
+        args.append("--linger")
+    raise SystemExit(subprocess.call(args))
 
 # Keys a profile owns outright: when running under a profile these are never taken
 # from .env, so a leftover token there can't start a platform the profile turned off.
@@ -183,4 +205,5 @@ async def main():
 
 
 if __name__ == "__main__":
+    _handle_service_flags(sys.argv[1:])
     asyncio.run(main())
