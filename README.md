@@ -20,7 +20,8 @@ java -cp target/systemc-java.jar systemc.ControlPanel   # Swing control panel (d
 systemc tui                                            # TUI control panel (SSH / no desktop)
 java -cp target/systemc-java.jar systemc.Providers models   # list Ollama models
 systemc service install        # start the bots at login/boot (systemd user unit)
-systemc update --check         # check GitHub releases for a newer version
+systemc update --check         # check GitHub's Latest release for a newer version
+systemc config                 # backend / version / update repo (set with: config set KEY VALUE)
 ```
 
 The Swing control panel does full first-run setup: the **Setup** tab writes your

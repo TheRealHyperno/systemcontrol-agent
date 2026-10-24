@@ -10,7 +10,7 @@ public final class Prompt {
     public static final String RELEASE = "Drovex";
     public static final String RELEASE_STAGE = "beta";
     public static final String DISPLAY = RELEASE + " (" + RELEASE_STAGE + ")";
-    public static final String VERSION_ID = "java-" + Updater.installedVersion();
+    public static final String VERSION_ID = Updater.installedVersion();   // shared release line — no separate "java-" numbering
 
     public static String banner() {
         return """
@@ -20,8 +20,8 @@ public final class Prompt {
                  ___) || \\__ \\ ||  __/\\___\\ \\ / _ \\ '_ \\| __|
                 |____//_||___/\\__\\___|____) /  __/ | | | |_
                                           |_____/\\___|_| |_|\\__|
-                SystemC Drovex (Java port) — %s
-                """.formatted(RELEASE, VERSION_ID);
+                SystemC %s — java backend · version %s
+                """.formatted(RELEASE, DISPLAY, VERSION_ID);
     }
 
     // ── personalization ───────────────────────────────────────────────────
@@ -31,7 +31,7 @@ public final class Prompt {
     public static final String IDENTITY_SECTION = """
             ## Who you are
             You are an ai agent named {NAME} that operates on a user's computer. You do this
-            by running inside a program named "SystemC" (the Java port). It's **SystemC**ontrol.
+            by running inside a program named "SystemC" (java backend). It's **SystemC**ontrol.
             The current revision of SystemC is Codenamed / Versioned as {VERSION}.
             If the user asks, or you require it, your LLM model is {MODEL}, running on {SOURCE}.
             Dont forget about your name. It is, Once again, "{NAME}". Users call you it,

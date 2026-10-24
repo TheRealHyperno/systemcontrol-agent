@@ -54,7 +54,13 @@ Everything lives in **`TheRealHyperno/systemcontrol-agent`**:
 | `systemcontrol-java` | a legacy one-file shim repo keeping the old `…/systemcontrol-java/install.sh` one-liner URL alive by forwarding |
 
 Releases (tarballs + sha256) live on `systemcontrol-agent`'s release page:
-v1.0.0–v1.0.4 (tag = java version; the python code is branch-based, not release-based).
+v1.0.0–v1.0.5 were java-numbered (v1.0.5 is the bridge release carrying this new engine); from v1.0.5 onward the java backend **shares one
+release line with the python backend** — same tags, same "Latest" release, no
+separate `java-` numbering. A java build rides along in a release as the
+`systemc-java-linux-x64.tar.gz` (+ `.sha256`) asset; releases without it are
+python-only and the java updater will tell you so instead of guessing by tag
+number. `systemc update` always pulls GitHub's Latest release — newest
+publication wins, never the highest tag.
 
 ## 3. Installing
 
@@ -92,7 +98,8 @@ Needs python3 only if you want python-compat integrations or the python version.
 | `systemc tui` | **terminal** control panel — same configuration over SSH/no desktop. Arrow keys/Enter/j/k, `q` walks back, secrets masked |
 | `systemc models` | list the Ollama models reachable at `OLLAMA_HOST` (first smoke test after install) |
 | `systemc service install \| status \| stop \| restart \| uninstall \| linger [--profile id]` | squash the bot into a systemd **user unit** — see section 14 |
-| `systemc update [--check \| --rollback] [--repo owner/name] [--pre-release]` | self-update from GitHub releases: check → download → sha256-verify → back up → replace (see also the Updates panel tab) |
+| `systemc update [--check \| --rollback] [--repo owner/name] [--pre-release]` | self-update from GitHub releases: always takes GitHub's **Latest** release (by publication date, not tag number) → download → sha256-verify → back up → replace (see also the Updates panel tab) |
+| `systemc config [show \| set KEY VALUE]` | show the backend/version/update-repo, or write a KEY (e.g. `UPDATE_REPO`) into `.env` from the terminal |
 | `systemc version` / `systemc jar` | which release/jar is running |
 
 First run:
@@ -192,7 +199,9 @@ own `DEPENDENCIES=` key (Pulled from the Profiles or Dependencies tab).
 | Key | Meaning |
 |---|---|
 | `UPDATE_REPO` | GitHub repo to track (default `TheRealHyperno/systemcontrol-agent`) |
-| `UPDATE_PRERELEASE` | `1` → also see/offer pre-release tags |
+| `UPDATE_PRERELEASE` | `1` → also offer the newest published release even when it's a pre-release (still by publication date, never by tag number) |
+
+Both are settable from the terminal with `systemc config set UPDATE_REPO …`.
 
 ## 6. Architecture
 

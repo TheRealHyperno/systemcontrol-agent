@@ -23,7 +23,7 @@ import java.util.*;
  */
 public final class Updater {
 
-    public static final String VERSION = "1.0.4";
+    public static final String VERSION = "1.0.5";
     public static final String ASSET = "systemc-java-linux-x64.tar.gz";
     /** used when UPDATE_REPO is not set (same default as python) */
     public static final String DEFAULT_REPO = "TheRealHyperno/systemcontrol-agent";
@@ -42,33 +42,22 @@ public final class Updater {
         return VERSION;
     }
 
-    /** Numeric-segment comparison: pads to the same length; returns true iff a > b. */
-    public static boolean newerThan(String a, String b) {
-        int[] x = nums(a), y = nums(b);
-        for (int i = 0; i < Math.max(x.length, y.length); i++) {
-            int p = i < x.length ? x[i] : 0, q = i < y.length ? y[i] : 0;
-            if (p != q) return p > q;
-        }
-        return false;
-    }
-
-    private static int[] nums(String v) {
-        var out = new ArrayList<Integer>();
-        for (String s : v.replaceAll("^[^0-9]*", "").split("[.\\-+]"))
-            if (s.matches("\\d+")) out.add(Integer.parseInt(s));
-        return out.stream().mapToInt(Integer::intValue).toArray();
-    }
-
     // ── check ──────────────────────────────────────────────────────────────
 
-    /** One GitHub release, shaped for the UI. */
+    /**
+     * One GitHub release, shaped for the UI. "LATEST" = GitHub's absolute latest
+     * release (newest publication — a stable v1.2 published after a "2.2" alpha is
+     * LATEST, the alpha never wins by tag number). With pre-releases enabled the
+     * newest published release of any kind wins, still purely by date, not tag.
+     */
     public static Map<String, Object> check(String repo, boolean preRelease) throws Exception {
         if (repo == null || repo.isBlank()) repo = Env.get("UPDATE_REPO", DEFAULT_REPO);
         repo = repo.strip().replaceAll("^https?://github\\.com/", "").replaceAll("/+$", "");
         if (!repo.matches("[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"))
             throw new IllegalArgumentException("repo must look like owner/name, got: " + repo);
 
-        String url = "https://api.github.com/repos/" + repo + "/releases";
+        String url = "https://api.github.com/repos/" + repo
+                + (preRelease ? "/releases" : "/releases/latest");
         HttpRequest.Builder rb = HttpRequest.newBuilder(URI.create(url))
                 .timeout(Duration.ofSeconds(20))
                 .header("Accept", "application/vnd.github+json")
@@ -76,23 +65,28 @@ public final class Updater {
         String token = System.getenv("GITHUB_TOKEN");
         if (token != null && !token.isBlank()) rb.header("Authorization", "Bearer " + token);
         HttpResponse<String> resp = HTTP.send(rb.GET().build(), HttpResponse.BodyHandlers.ofString());
-        if (resp.statusCode() != 200)
-            throw new IOException("GitHub returned HTTP " + resp.statusCode() + " for " + repo);
-        var releases = Json.parseList(resp.body());
-        if (releases == null || releases.isEmpty()) throw new IOException("no releases published on " + repo);
 
-        Map<String, Object> chosen = null;
-        for (var r : releases) {                            // API returns newest first
-            boolean pre = Boolean.TRUE.equals(r.get("prerelease"))
-                    || "prereleased".equals(String.valueOf(r.getOrDefault("draft", "")));
-            boolean draft = Boolean.TRUE.equals(r.get("draft"));
-            if (draft) continue;
-            if (pre && !preRelease) continue;
-            chosen = r;
-            break;
+        Map<String, Object> chosen;
+        if (preRelease) {
+            if (resp.statusCode() != 200)
+                throw new IOException("GitHub returned HTTP " + resp.statusCode() + " for " + repo);
+            var releases = Json.parseList(resp.body());
+            if (releases == null) throw new IOException("no releases published on " + repo);
+            chosen = null;
+            for (var r : releases) {                        // API returns newest published first
+                if (Boolean.TRUE.equals(r.get("draft"))) continue;
+                chosen = r;
+                break;
+            }
+            if (chosen == null) throw new IOException("no published releases on " + repo);
+        } else {
+            if (resp.statusCode() == 404)
+                throw new IOException("no published releases on " + repo + " yet");
+            if (resp.statusCode() != 200)
+                throw new IOException("GitHub returned HTTP " + resp.statusCode() + " for " + repo);
+            chosen = Json.parse(resp.body());
+            if (chosen == null) throw new IOException("could not parse the latest release");
         }
-        if (chosen == null) throw new IOException("no " + (preRelease ? "" : "non-prerelease ")
-                + "releases on " + repo + (preRelease ? "" : " (enable pre-releases to see betas)"));
 
         Map<String, Object> out = Json.map();
         out.put("tag", String.valueOf(chosen.getOrDefault("tag_name", "")));
@@ -112,15 +106,26 @@ public final class Updater {
                     if (n.equals(ASSET + ".sha256")) shaUrl = dl;
                 }
         if (assetUrl == null)
-            throw new IOException("release " + chosen.get("tag_name") + " has no " + ASSET + " asset");
+            throw new IOException("the latest release (" + out.get("tag")
+                    + ") doesn't ship a java build — no " + ASSET
+                    + " asset (it's a python-backend release; either release a java build for it or pick a repo that carries one)");
         out.put("asset_url", assetUrl);
         if (shaUrl != null) out.put("sha_url", shaUrl);
 
         String installed = installedVersion();
         out.put("installed", installed);
-        out.put("update_available", newerThan(String.valueOf(out.get("tag")).replaceFirst("^v", ""), installed));
+        // java and python share one release line now, so "newer" is decided by
+        // github's latest selection, not tag arithmetic: we need an update iff
+        // the latest release isn't the one we're already running.
+        String tag = String.valueOf(out.get("tag"));
+        out.put("update_available", !normalize(tag).equals(normalize(installed)));
         out.put("app_dir", appDir().toString());
         return out;
+    }
+
+    /** v1.2 → 1.2, alpha-v2.2.3 stays alpha-v2.2.3 (case-insensitive, leading v dropped). */
+    static String normalize(String v) {
+        return v == null ? "" : v.strip().replaceFirst("^v", "").toLowerCase(Locale.ROOT);
     }
 
     // ── install / apply ────────────────────────────────────────────────────

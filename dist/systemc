@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # systemc — launcher for SystemC Drovex (Java).
-#   systemc [run|panel|models|service|version]
+#   systemc [run|panel|tui|models|service|update|config|version]
 set -euo pipefail
 
 SOURCE="${BASH_SOURCE[0]}"
@@ -36,8 +36,27 @@ case "$cmd" in
   models)  exec "$JAVA_BIN" -cp "$JAR" systemc.Providers models ;;
   update)  shift 2>/dev/null || true; exec "$JAVA_BIN" -cp "$JAR" systemc.Updater "$@" ;;
   version) V="$(basename "$JAR" | sed -e 's/^systemc-java-//; s/\.jar$//')"
-           echo "SystemC Drovex (Java port) v$V"
+           echo "SystemC v$V — java backend (release line shared with the python backend)"
            echo "jar: $JAR" ;;
+  config)
+    shift 2>/dev/null || true
+    case "${1:-show}" in
+      show) V="$(basename "$JAR" | sed -e 's/^systemc-java-//; s/\.jar$//')"
+            echo "backend:   java (python backend ships in the same repo's releases)"
+            echo "version:   $V"
+            echo "repo:      ${UPDATE_REPO:-TheRealHyperno/systemcontrol-agent}"
+            echo "pre-release: ${UPDATE_PRERELEASE:-0}" ;;
+      set)  KEY="${2:-}"; VAL="${3:-}"
+            [ -n "$KEY" ] && [ -n "$VAL" ] || { echo "usage: systemc config set KEY VALUE" >&2; exit 1; }
+            touch "$PREFIX/.env"
+            if grep -qE "^${KEY}=" "$PREFIX/.env"; then
+              sed -i "s|^${KEY}=.*|${KEY}=${VAL}|" "$PREFIX/.env"
+            else
+              echo "${KEY}=${VAL}" >> "$PREFIX/.env"
+            fi
+            echo "${KEY}=${VAL} → $PREFIX/.env" ;;
+      *)    echo "usage: systemc config [show|set KEY VALUE]" >&2; exit 1 ;;
+    esac ;;
   jar)     echo "$JAR" ;;
   service)
     ACTION=""
@@ -120,5 +139,5 @@ case "$ACTION" in
 esac
 SVC
     ;;
-  *) echo "usage: systemc [run|panel|tui|models|service|version]"; exit 1 ;;
+  *) echo "usage: systemc [run|panel|tui|models|service|update|config|version]"; exit 1 ;;
 esac
