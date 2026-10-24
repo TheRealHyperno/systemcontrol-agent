@@ -658,7 +658,10 @@ public final class ControlPanel extends JFrame {
         });
         var refresh = new JButton("Reload");
         refresh.addActionListener(e -> { Integrations.discover(true); refreshIntegrations(); });
-        buttons.add(toggle);
+        var getNew = new JButton("Get New +");
+        getNew.setToolTipText("Community integration directory (systemcontrol-plugins)");
+        getNew.addActionListener(e -> openPluginsExplorer());
+        buttons.add(getNew);
         buttons.add(settings);
         buttons.add(install);
         buttons.add(openFolder);
@@ -1711,9 +1714,159 @@ public final class ControlPanel extends JFrame {
 
     // ── shared helpers ───────────────────────────────────────────────────
 
-    void background(Runnable r) {
-        Thread.ofPlatform().daemon().start(r);
+    void openPluginsExplorer() {
+        SwingUtilities.invokeLater(() -> {
+            JDialog d = new JDialog(this, "Community Integrations (Plugins)", true);
+            d.setSize(860, 560);
+            d.setLocationRelativeTo(this);
+            d.setLayout(new BorderLayout(8, 8));
+
+            var search = new JTextField();
+            var backend = new JComboBox<>(new String[]{"java", "python"});
+            var backendLabel = new JLabel("Install as:");
+            backend.setSelectedItem(Env.get("BACKEND", "java").toLowerCase());
+
+            var model = new DefaultListModel<String>();
+            var list = new JList<String>(model);
+            list.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+            list.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 13));
+            var detail = new JTextArea();
+            detail.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+            detail.setEditable(false);
+            detail.setLineWrap(true);
+            detail.setWrapStyleWord(true);
+
+            var entries = new ArrayList<Map<String, Object>>();
+            var filtered = new ArrayList<Integer>();
+
+            java.util.function.Consumer<String> applyFilter = needle -> {
+                model.clear(); filtered.clear();
+                String n = needle == null ? "" : needle.toLowerCase();
+                for (int i = 0; i < entries.size(); i++) {
+                    var p = entries.get(i);
+                    String hay = ((String) p.getOrDefault("id", "")) + " "
+                            + p.getOrDefault("name", "") + " " + p.getOrDefault("author", "") + " "
+                            + p.getOrDefault("description", "") + " "
+                            + String.valueOf(p.getOrDefault("tags", List.of())) + " "
+                            + p.getOrDefault("status", "");
+                    if (n.isBlank() || hay.toLowerCase().contains(n)) {
+                        model.addElement(String.format("[%s] %-16s %-10s %-30s",
+                                String.valueOf(p.getOrDefault("status", "untested")),
+                                p.getOrDefault("id", "?"),
+                                String.valueOf(p.getOrDefault("backends", List.of())),
+                                String.valueOf(p.getOrDefault("name", "?"))));
+                        filtered.add(i);
+                    }
+                }
+                if (!model.isEmpty()) list.setSelectedIndex(0);
+            };
+
+            Runnable reload = () -> {
+                model.clear();
+                filtered.clear();
+                detail.setText("Loading registry…");
+                background(() -> {
+                    List<Map<String, Object>> ps = Plugins.listPlugins();
+                    SwingUtilities.invokeLater(() -> {
+                        entries.clear(); entries.addAll(ps);
+                        applyFilter.accept(search.getText().strip());
+                        detail.setText(ps.isEmpty()
+                            ? "No plugins reported by the registry (check network / PLUGINS_INDEX overrides)."
+                            : "Select a plugin to see its description and status.\\nClick 'Install' to download it into the integrations/ folder.");
+                        d.setTitle("Community Integrations (" + ps.size() + ")");
+                    });
+                });
+            };
+
+            list.addListSelectionListener(ev -> {
+                if (ev.getValueIsAdjusting()) return;
+                int idx = list.getSelectedIndex();
+                if (idx < 0 || idx >= filtered.size()) { detail.setText(""); return; }
+                var p = entries.get(filtered.get(idx));
+                var sb = new StringBuilder();
+                sb.append("name: ").append(p.getOrDefault("name", "?")).append("\n");
+                sb.append("author: ").append(p.getOrDefault("author", "?")).append("\n");
+                sb.append("status: ").append(p.getOrDefault("status", "?")).append("\n");
+                sb.append("backends: ").append(p.getOrDefault("backends", List.of())).append("\n");
+                sb.append("tags: ").append(p.getOrDefault("tags", List.of())).append("\n");
+                sb.append("version: ").append(p.getOrDefault("version", "?")).append("\n");
+                Object stars = p.get("stars"); if (stars != null) sb.append("rating: ").append(stars).append("\n");
+                sb.append("\\n").append(p.getOrDefault("description", "")).append("\n");
+                if (p.get("repo") != null) sb.append("\\nrepo: ").append(p.get("repo"));
+                if (p.get("assets") instanceof Map<?,?> a) {
+                    var java = a.get("java"); var py = a.get("python");
+                    sb.append("\\nassets: java=").append(java == null ? "—" : java)
+                      .append(" · python=").append(py == null ? "—" : py);
+                }
+                detail.setText(sb.toString());
+                detail.setCaretPosition(0);
+            });
+
+            var searchPanel = new JPanel(new BorderLayout(6, 4));
+            searchPanel.add(new JLabel("Search"), BorderLayout.WEST);
+            searchPanel.add(search, BorderLayout.CENTER);
+            var south = new JPanel(new BorderLayout(6, 4));
+            south.add(searchPanel, BorderLayout.CENTER);
+            var actionBox = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
+            backendLabel.setLabelFor(backend);
+            actionBox.add(backendLabel);
+            actionBox.add(backend);
+            var installBtn = new JButton("Install");
+            installBtn.addActionListener(e -> {
+                int idx = list.getSelectedIndex();
+                if (idx < 0 || idx >= filtered.size()) return;
+                var p = entries.get(filtered.get(idx));
+                String pluginId = String.valueOf(p.get("id"));
+                String b = String.valueOf(backend.getSelectedItem());
+                installBtn.setEnabled(false);
+                search.setEnabled(false);
+                background(() -> {
+                    try {
+                        Plugins.installPlugin(pluginId, b);
+                        SwingUtilities.invokeLater(() -> {
+                            log("plugins: installed " + pluginId + " (" + b + ") into integrations/");
+                            Integrations.discover(true);
+                            refreshIntegrations();
+                            JOptionPane.showMessageDialog(d, "Installed '" + pluginId + "' (" + b + ")\\n\\n"
+                                    + "Add " + pluginId + " to INTEGRATIONS= (or 'all') in .env, then restart.", "Plugin installed", JOptionPane.INFORMATION_MESSAGE);
+                        });
+                    } catch (Exception ex) {
+                        SwingUtilities.invokeLater(() -> {
+                            log("⚠ plugin install " + pluginId + " failed: " + ex.getMessage());
+                            JOptionPane.showMessageDialog(d, ex.getMessage(), "Install failed", JOptionPane.ERROR_MESSAGE);
+                        });
+                    } finally {
+                        SwingUtilities.invokeLater(() -> {
+                            installBtn.setEnabled(true);
+                            search.setEnabled(true);
+                        });
+                    }
+                });
+            });
+            actionBox.add(installBtn);
+            var refresh = new JButton("Reload");
+            refresh.addActionListener(e -> reload.run());
+            actionBox.add(refresh);
+            south.add(actionBox, BorderLayout.SOUTH);
+
+            search.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
+                public void insertUpdate(javax.swing.event.DocumentEvent e) { applyFilter.accept(search.getText().strip()); }
+                public void removeUpdate(javax.swing.event.DocumentEvent e) { applyFilter.accept(search.getText().strip()); }
+                public void changedUpdate(javax.swing.event.DocumentEvent e) { applyFilter.accept(search.getText().strip()); }
+            });
+            // manually runnable applyFilter available via lambda capture of search field
+
+            d.add(searchPanel, BorderLayout.NORTH);
+            var split = new JSplitPane(JSplitPane.VERTICAL_SPLIT, new JScrollPane(list), new JScrollPane(detail));
+            split.setResizeWeight(0.55);
+            d.add(split, BorderLayout.CENTER);
+            d.add(south, BorderLayout.SOUTH);
+
+            reload.run();
+            d.setVisible(true);
+        });
     }
+
 
     void infoBox(String s) {
         JOptionPane.showMessageDialog(this, s);
@@ -1745,4 +1898,8 @@ public final class ControlPanel extends JFrame {
         } catch (Exception ignored) {}
         SwingUtilities.invokeLater(() -> new ControlPanel().setVisible(true));
     }
+    void background(Runnable r) {
+        Thread.ofPlatform().daemon().start(r);
+    }
+
 }

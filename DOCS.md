@@ -1,7 +1,7 @@
 # SystemC Drovex — complete documentation
 
 Covers the **Java** port (the `java` branch) and notes where the **Python** original
-(the `main` branch) differs. Everything applies to release **v1.0.9**.
+(the `main` branch) differs. Everything applies to release **v1.0.10**.
 
 Contents:
 
