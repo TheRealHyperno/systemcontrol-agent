@@ -23,8 +23,10 @@ systemc service install        # start the bots at login/boot (systemd user unit
 ```
 
 Integrations (extra agent tools as Java SPI jars or python-compat `.py` files,
-with settings menus in the Swing panel / TUI / web API) are documented in
-[INTEGRATIONS.md](INTEGRATIONS.md).
+with settings menus in the Swing panel / TUI / web API) — see
+[INTEGRATIONS.md](INTEGRATIONS.md). Full documentation of everything (install,
+config keys, architecture, tools, approvals, sessions, systemd, troubleshooting)
+is in [DOCS.md](DOCS.md).
 
 The TUI control panel configures the same .env keys as the Swing panel — it runs
 on any TTY or over SSH with no desktop environment (arrow keys + Enter; q backs out).
