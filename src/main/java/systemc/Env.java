@@ -73,6 +73,11 @@ public final class Env {
         return def;
     }
 
+    /** Snapshot of what was loaded from .env (for dead-simple consumers like the PyBridge). */
+    public static synchronized java.util.Map<String, String> fileEnv() {
+        return new java.util.LinkedHashMap<>(FILE);
+    }
+
     /** Writes a KEY=VALUE to .env (replacing an existing line or appending). */
     public static synchronized void set(String key, String value) {
         FILE.put(key, value);

@@ -108,6 +108,56 @@ public final class WebUi {
             sendJson(ex, 200, OM.writeValueAsString(Sessions.listSessions()));
             return;
         }
+        // ── integrations ──
+        if (path.equals("/api/v1/integrations") && !"PUT".equals(ex.getRequestMethod())) {
+            var discovered = Integrations.discover(false);
+            var enabled = new HashSet<>(Integrations.enabledNames(discovered));
+            var list = new ArrayList<Map<String, Object>>();
+            for (var e : discovered.values()) {
+                Map<String, Object> m = Json.map();
+                m.put("name", e.name);
+                m.put("description", e.description);
+                m.put("source", e.source);
+                m.put("enabled", enabled.contains(e.name));
+                m.put("error", e.error == null ? "" : e.error);
+                m.put("tools", e.tools.stream().map(t -> t.get("name")).toList());
+                m.put("menu_title", Integrations.menuTitle(e));
+                m.put("fields", Integrations.fieldsOf(e));
+                m.put("settings", Integrations.currentSettings(e));
+                list.add(m);
+            }
+            sendJson(ex, 200, OM.writeValueAsString(list));
+            return;
+        }
+        if (path.equals("/api/v1/integrations/settings") && "PUT".equals(ex.getRequestMethod())) {
+            Map<String, Object> body = readJson(ex);
+            String name = String.valueOf(body.getOrDefault("name", ""));
+            var discovered = Integrations.discover(false);
+            var e = discovered.get(name);
+            if (e == null) { sendJson(ex, 404, "{\"error\":\"no such integration\"}"); return; }
+            if (Integrations.fieldsOf(e).isEmpty()) { sendJson(ex, 400, "{\"error\":\"no settings page\"}"); return; }
+            var values = Integrations.currentSettings(e);
+            if (body.get("settings") instanceof Map<?, ?> patch) {
+                for (var en : patch.entrySet())
+                    if (en.getKey() != null) values.put(String.valueOf(en.getKey()),
+                            en.getValue() == null ? "" : String.valueOf(en.getValue()));
+                Integrations.saveSettings(e, values);
+            }
+            sendJson(ex, 200, OM.writeValueAsString(Integrations.currentSettings(e)));
+            return;
+        }
+        if (path.equals("/api/v1/integrations/enable") && "POST".equals(ex.getRequestMethod())) {
+            Map<String, Object> body = readJson(ex);
+            String name = String.valueOf(body.getOrDefault("name", ""));
+            var discovered = Integrations.discover(false);
+            if (!discovered.containsKey(name)) { sendJson(ex, 404, "{\"error\":\"no such integration\"}"); return; }
+            boolean enable = body.get("enabled") instanceof Boolean b ? b : !Integrations.isEnabled(name);
+            Integrations.setEnabledNames(enable
+                    ? java.util.stream.Stream.concat(Integrations.enabledNames(discovered).stream(), java.util.stream.Stream.of(name)).distinct().toList()
+                    : Integrations.enabledNames(discovered).stream().filter(n -> !n.equals(name)).toList());
+            sendJson(ex, 200, "{\"ok\":true,\"enabled\":" + Integrations.isEnabled(name) + "}");
+            return;
+        }
         if (path.equals("/api/v1/sessions/reset") && "POST".equals(ex.getRequestMethod())) {
             Map<String, Object> body = readJson(ex);
             String key = String.valueOf(body.getOrDefault("key", ""));

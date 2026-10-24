@@ -22,6 +22,10 @@ java -cp target/systemc-java.jar systemc.Providers models   # list Ollama models
 systemc service install        # start the bots at login/boot (systemd user unit)
 ```
 
+Integrations (extra agent tools as Java SPI jars or python-compat `.py` files,
+with settings menus in the Swing panel / TUI / web API) are documented in
+[INTEGRATIONS.md](INTEGRATIONS.md).
+
 The TUI control panel configures the same .env keys as the Swing panel — it runs
 on any TTY or over SSH with no desktop environment (arrow keys + Enter; q backs out).
 

@@ -66,19 +66,21 @@ public final class Tui {
                     "Agent     — model backend, approvals",
                     "Console   — web UI port & token",
                     "Subagents — extra helper agents",
+                    "Integrations — enable/disable + settings (java & python)",
                     "Startup   — systemd service (install / stop / remove)",
                     "Edit .env — open in $EDITOR",
                     "Exit"};
             int pick = menu(header() + "\n\n" + statusLine(), items);
 
-            if (pick == 6 || pick == -1) return;
+            if (pick == 7 || pick == -1) return;
             switch (pick) {
                 case 0 -> pillar("Bots — Discord & Stoat front-ends", FRONTEND);
                 case 1 -> pillar("Agent — model backend and approval style", AGENTCFG);
                 case 2 -> pillar("Console — web UI", CONSOLE);
                 case 3 -> pillar("Subagents", SUBAGENTCNF);
-                case 4 -> serviceMenu();
-                case 5 -> editEnvFile();
+                case 4 -> integrationsMenu();
+                case 5 -> serviceMenu();
+                case 6 -> editEnvFile();
             }
         }
     }
@@ -159,7 +161,101 @@ public final class Tui {
         raw();
     }
 
-    // ── .env in $EDITOR ───────────────────────────────────────────────────────
+    /** Settings page for one integration (from its panel() descriptor). */
+    private static void integrationSettings(Integrations.Entry e) {
+        var fields = Integrations.fieldsOf(e);
+        var values = Integrations.currentSettings(e);
+        int sel = 0;
+        while (true) {
+            var sb = new StringBuilder(header()).append("\n\n")
+                    .append(BLUE).append(Integrations.menuTitle(e)).append(RESET)
+                    .append(DIM).append("  — saved in .env (values apply at next bot start)").append(RESET).append("\n\n");
+            for (int i = 0; i < fields.size(); i++) {
+                var f = fields.get(i);
+                String v = values.get(f.key());
+                String shown = switch (f.type()) {
+                    case "secret" -> v.isBlank() ? DIM + "(not set)" + RESET
+                            : YELLOW + "●".repeat(Math.min(20, Math.max(8, v.length() / 8 + 6))) + RESET;
+                    default -> v.isBlank() ? DIM + "(not set)" + RESET : YELLOW + v + RESET;
+                };
+                sb.append(i == sel ? SEL + " ▸ " : "   ")
+                  .append(String.format("%-40s", f.label()))
+                  .append(shown).append(RESET).append("\n");
+            }
+            sb.append("\n").append(DIM).append("  Enter edit · q/Esc back").append(RESET).append("\n");
+            System.out.print(sb); System.out.flush();
+            int c = readKey();
+            if (c == 'q' || c == 'Q' || c == 27 || c == -1) return;
+            if (c == 'j' || c == 'B') sel = (sel + 1) % Math.max(1, fields.size());
+            if (c == 'k' || c == 'A') sel = (sel + Math.max(1, fields.size()) - 1) % Math.max(1, fields.size());
+            if (c == '\n' || c == '\r' && !fields.isEmpty()) {
+                var f = fields.get(sel);
+                String current = values.get(f.key());
+                restore();
+                String hint = current.isBlank() ? "" : DIM + "  (Enter keeps: " + current + ")" + RESET;
+                System.out.print(BOLD + f.label() + RESET + hint + "\n> ");
+                if (f.choices() != null && !f.choices().isEmpty()) {
+                    // show choices instead of free text
+                    System.out.println();
+                    for (int i = 0; i < f.choices().size(); i++)
+                        System.out.println("   " + (i + 1) + ") " + f.choices().get(i));
+                    System.out.print("pick 1-" + f.choices().size() + ": ");
+                }
+                System.out.flush();
+                String in = new java.util.Scanner(System.in).nextLine().strip();
+                String v = in;
+                if (f.choices() != null && !f.choices().isEmpty()) {
+                    try {
+                        int idx = Integer.parseInt(in) - 1;
+                        if (idx >= 0 && idx < f.choices().size()) v = f.choices().get(idx);
+                    } catch (NumberFormatException ignored) {}
+                }
+                if (v.isBlank() && !current.isBlank()) v = current;   // Enter keeps
+                values.put(f.key(), v);
+                Integrations.saveSettings(e, values);
+                raw();
+            }
+        }
+    }
+
+    // ── integrations menu (java SPI + python-compat) ─────────────────────────
+
+    private static void integrationsMenu() {
+        var discovered = Integrations.discover(false);
+        var enabled = new HashSet<>(Integrations.enabledNames(discovered));
+        var list = new ArrayList<>(discovered.entrySet());
+        String[] labels = new String[list.size() + 2];
+        String[] names = new String[list.size()];   // parallel array
+        for (int i = 0; i < list.size(); i++) {
+            var e = list.get(i).getValue();
+            names[i] = e.name;
+            labels[i] = String.format("%-12s %s · %s · %d tools%s", e.name,
+                    enabled.contains(e.name) ? "✔" : "   ", e.source, e.tools.size(),
+                    e.error == null ? "" : " ⚠ " + e.error);
+        }
+        labels[list.size()] = "Edit INTEGRATIONS= list in $EDITOR";
+        labels[list.size() + 1] = "Back";
+        int pick = menu(header() + "\n\n", labels);
+        if (pick < 0 || pick >= list.size() + 1) return;
+        if (pick == list.size()) { editEnvFile(); integrationsMenu(); return; }
+        var e = list.get(pick).getValue();
+        Integrations.toggleEnabled(e.name);
+        discoveryStatus(e);
+        if (!e.tools.isEmpty() && !Integrations.isEnabled(e.name)) discoveryStatus(e);
+        if (Integrations.fieldsOf(e).isEmpty()) {
+            System.out.println(DIM + "no settings page — " + e.name + " declares none" + RESET);
+        } else {
+            integrationSettings(e);
+        }
+        integrationsMenu();
+    }
+
+    private static void discoveryStatus(Integrations.Entry e) {
+        System.out.println((Integrations.isEnabled(e.name)
+                ? DIM + "enabled (restart the bots to load its tools)" + RESET
+                : DIM + "disabled" + RESET) + " · " + e.name);
+    }
+
 
     private static void editEnvFile() {
         Path env = Env.baseDir().resolve(".env");

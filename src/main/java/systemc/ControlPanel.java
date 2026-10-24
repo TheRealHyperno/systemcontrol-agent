@@ -48,6 +48,7 @@ public final class ControlPanel extends JFrame {
         tabs.addTab("Approvals", approvalsTab());
         tabs.addTab("Profiles", profilesTab());
         tabs.addTab("Personalize", personalizeTab());
+        tabs.addTab("Integrations", integrationsTab());
         add(tabs);
 
         // pipe our own stdout into the log area, and refresh lists periodically
@@ -55,6 +56,7 @@ public final class ControlPanel extends JFrame {
             refreshSessions();
             refreshApprovals();
             refreshProfiles();
+            refreshIntegrations();
         });
         uiTimer.start();
     }
@@ -289,7 +291,179 @@ public final class ControlPanel extends JFrame {
         }
     }
 
-    // ── Personalize ──────────────────────────────────────────────────────
+    // ── Integrations (java SPI + python-compat) ──────────────────────────
+
+    final DefaultListModel<String> integrationsModel = new DefaultListModel<>();
+    final Map<String, Integrations.Entry> integrationEntries = new LinkedHashMap<>();
+    final JList<String> integrationsList = new JList<>(integrationsModel);
+
+    JComponent integrationsTab() {
+        integrationsList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        var hint = new JLabel("<html><body style='width:640px'><b>Integrations</b> give the agent extra tools. "
+                + "Drop an integration <code>.jar</code> (SPI: implements <code>systemc.integrations.Integration</code>) "
+                + "or a python-compat <code>.py</code> into the <code>integrations/</code> folder, then enable it here — "
+                + "the agent sees its tools on the next bot start.</body></html>");
+        var buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
+        var toggle = new JButton("Enable / disable");
+        toggle.addActionListener(e -> {
+            var ent = selectedIntegration();
+            if (ent == null) return;
+            Integrations.toggleEnabled(ent.name);
+            log("integrations: toggled " + ent.name + " (restart the bots to apply)");
+        });
+        var settings = new JButton("Settings…");
+        settings.addActionListener(e -> {
+            var ent = selectedIntegration();
+            if (ent == null) return;
+            if (Integrations.fieldsOf(ent).isEmpty()) {
+                log("integrations: " + ent.name + " has no settings page");
+                return;
+            }
+            showIntegrationSettings(ent);
+        });
+        var install = new JButton("Install from .jar…");
+        install.addActionListener(e -> {
+            var fc = new JFileChooser();
+            fc.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter("Integration .jar", "jar"));
+            if (fc.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) return;
+            try {
+                var jar = fc.getSelectedFile().toPath();
+                Files.copy(jar, Integrations.dir().resolve(jar.getFileName()),
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                Integrations.discover(true);
+                refreshIntegrations();
+                log("integrations: installed " + jar.getFileName() + " (restart the bots to apply)");
+            } catch (Exception ex) { logString(ex.getMessage()); }
+        });
+        var openFolder = new JButton("Open folder");
+        openFolder.addActionListener(e -> {
+            try {
+                if (Desktop.isDesktopSupported()) Desktop.getDesktop().open(Integrations.dir().toFile());
+            } catch (Exception ex) { logString(ex.getMessage()); }
+        });
+        var refresh = new JButton("Reload");
+        refresh.addActionListener(e -> { Integrations.discover(true); refreshIntegrations(); });
+        buttons.add(toggle);
+        buttons.add(settings);
+        buttons.add(install);
+        buttons.add(openFolder);
+        buttons.add(refresh);
+
+        var all = new JPanel(new BorderLayout(10, 4));
+        all.add(hint, BorderLayout.NORTH);
+        all.add(buttons, BorderLayout.SOUTH);
+
+        var root = new JPanel(new BorderLayout(10, 10));
+        root.setBorder(new EmptyBorder(14, 14, 14, 14));
+        root.add(all, BorderLayout.NORTH);
+        root.add(new JScrollPane(integrationsList), BorderLayout.CENTER);
+        return root;
+    }
+
+    void logString(String s) { log("⚠ " + s); }
+
+    Integrations.Entry selectedIntegration() {
+        int i = integrationsList.getSelectedIndex();
+        if (i < 0 || i >= integrationEntries.size()) return null;
+        var row = integrationsModel.get(i);
+        for (var e : integrationEntries.values()) {
+            if (row.startsWith(e.name + " ") || row.startsWith(e.name + "\t")) return e;
+        }
+        return null;
+    }
+
+    void refreshIntegrations() {
+        var entries = Integrations.discover(false);
+        var enabled = new HashSet<>(Integrations.enabledNames(entries));
+        integrationEntries.clear();
+        integrationsModel.clear();
+        for (var e : entries.values()) {
+            if (e.tools == null) continue;
+            integrationEntries.put(e.name, e);
+            integrationsModel.addElement(String.format("%-12s  %s    %s    %s", e.name,
+                    enabled.contains(e.name) ? "✔ enabled" : "  disabled",
+                    e.tools.size() + " tool(s)", e.summary()));
+        }
+    }
+
+    static boolean truthy(String v) {
+        v = v == null ? "" : v.toLowerCase().strip();
+        return List.of("1", "true", "yes", "on").contains(v);
+    }
+
+    /** One settings dialog generated from the integration's panel() descriptor. */
+    void showIntegrationSettings(Integrations.Entry e) {
+        var values = Integrations.currentSettings(e);
+        var ui = new LinkedHashMap<String, JComponent>();
+        var dia = new JDialog(this, "Integrations — " + Integrations.menuTitle(e), true);
+        var panel = new JPanel(new GridBagLayout());
+        panel.setBorder(new EmptyBorder(12, 14, 12, 14));
+        var c = new GridBagConstraints();
+        c.gridx = 0; c.gridy = 0; c.insets = new Insets(4, 4, 4, 4); c.anchor = GridBagConstraints.WEST;
+        int row = 0;
+        for (var f : Integrations.fieldsOf(e)) {
+            c.gridy = row++;
+            c.gridx = 0;
+            panel.add(new JLabel(f.label()), c);
+            c.gridx = 1;
+            JComponent field;
+            switch (f.type()) {
+                case "bool" -> {
+                    var box = new JCheckBox();
+                    box.setSelected(values.containsKey(f.key()) && !values.get(f.key()).isBlank()
+                            ? truthy(values.get(f.key())) : truthy(f.def()));
+                    field = box;
+                }
+                case "choice" -> {
+                    var combo = new JComboBox<String>();
+                    if (f.choices() != null) for (String s : f.choices()) combo.addItem(s);
+                    combo.setSelectedItem(values.getOrDefault(f.key(), f.def()));
+                    field = combo;
+                }
+                case "secret" -> field = new JPasswordField(values.getOrDefault(f.key(), f.def()));
+                default -> field = new JTextField(values.getOrDefault(f.key(), f.def()));
+            }
+            ui.put(f.key(), field);
+            panel.add(field, c);
+            if (!f.description().isEmpty()) {
+                c.gridy = row++;
+                c.gridx = 1;
+                var d = new JLabel("<html><body style='width:380px;color:#6e6e73'>" + f.description() + "</body></html>");
+                d.setFont(d.getFont().deriveFont(11f));
+                panel.add(d, c);
+            }
+        }
+        var save = new JButton("Save to .env");
+        save.addActionListener(ev -> {
+            for (var f : Integrations.fieldsOf(e)) {
+                JComponent comp = ui.get(f.key());
+                String v;
+                if (comp instanceof JCheckBox box) v = box.isSelected() ? "true" : "false";
+                else if (comp instanceof JComboBox<?> box) v = String.valueOf(box.getSelectedItem());
+                else if (comp instanceof JPasswordField pf) v = new String(pf.getPassword());
+                else if (comp instanceof JTextField tf) v = tf.getText().strip();
+                else if (comp != null) v = String.valueOf(comp);
+                else v = values.getOrDefault(f.key(), f.def());
+                values.put(f.key(), v == null ? "" : v);
+            }
+            Integrations.saveSettings(e, values);
+            log("integrations: saved " + e.name + " settings to .env — restart the bots to apply");
+            dia.dispose();
+        });
+        var cancel = new JButton("Cancel");
+        cancel.addActionListener(ev -> dia.dispose());
+        var bottom = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        bottom.add(cancel);
+        bottom.add(save);
+        var root = new JPanel(new BorderLayout());
+        root.add(new JScrollPane(panel), BorderLayout.CENTER);
+        root.add(bottom, BorderLayout.SOUTH);
+        dia.setContentPane(root);
+        dia.setSize(700, 440);
+        dia.setLocationRelativeTo(this);
+        dia.setVisible(true);
+    }
+
     JComponent personalizeTab() {
         var name = new JTextField(Env.get("AGENT_NAME", cred()));
         var gender = new JTextField(Env.get("AGENT_GENDER"));

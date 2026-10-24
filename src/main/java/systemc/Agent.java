@@ -310,8 +310,15 @@ public final class Agent {
         if (subagentsEnabled()) baseSchemas.addAll(SUBAGENT_TOOL_SCHEMAS);
         var allSchemas = new ArrayList<>(baseSchemas);
 
+        // integrations: extra tools + prompt sections (java SPI and python-compat)
+        var builtinNames = new ArrayList<String>();
+        for (var s : baseSchemas) if (s.get("name") instanceof String n) builtinNames.add(n);
+        var toolset = Integrations.build(author, channel == null ? "" : channel.platform(), builtinNames);
+        allSchemas.addAll(toolset.schemas);
+
         provider.setSystemPrompt(String.join("\n\n",
-                java.util.stream.Stream.of(Prompt.buildSystemPrompt(provider.model()), memContext)
+                java.util.stream.Stream.of(Prompt.buildSystemPrompt(provider.model()),
+                                String.join("\n\n", toolset.promptSections), memContext)
                         .filter(s -> s != null && !s.isBlank())
                         .collect(Collectors.joining("\n\n"))).trim());
 
@@ -398,7 +405,31 @@ public final class Agent {
                                 yield runSubagents(channel, List.of(t));
                             }
                             case "spawn_subagents" -> runSubagents(channel, args.get("tasks"));
-                            default -> Map.of("error", "unknown tool: " + name);
+                            default -> {
+                                if (toolset.owns(name)) {
+                                    var entry = toolset.owner(name);
+                                    var ic = new systemc.integrations.Integration.Context();
+                                    if (channel != null) {
+                                        ic.platform = channel.platform(); ic.channelId = channel.id();
+                                        ic.send = m -> safeSend(channel, m);
+                                        ic.sendFile = (path, cap) -> {
+                                            try { channel.sendFile(path, cap == null || "null".equals(cap) ? "" : cap); }
+                                            catch (Exception ignored) {}
+                                        };
+                                        ic.requestApproval = (text, timeout) -> channel.requestApproval(text, timeout);
+                                    }
+                                    if (author != null) {
+                                        ic.authorId = author.getOrDefault("id", "");
+                                        ic.authorName = author.getOrDefault("name", "");
+                                    }
+                                    Object r = entry.handle(ic, name, args);
+                                    Map<String, Object> rr = r instanceof Map<?, ?> m
+                                            ? (Map<String, Object>) m
+                                            : Map.of("result", r == null ? "" : r);
+                                    yield rr;
+                                }
+                                yield Map.of("error", "unknown tool: " + name);
+                            }
                         };
                     } catch (Exception e) {
                         result = Map.of("error", e.getClass().getSimpleName() + ": " + e.getMessage());

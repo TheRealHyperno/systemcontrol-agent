@@ -52,6 +52,9 @@ public final class Main {
         Agent agent = new Agent();
         var latch = new CountDownLatch(1);
 
+        // integrations banner (python-parity [integrations] lines)
+        for (String l : Integrations.summary()) System.out.println(l);
+
         if (discord) {
             Thread.ofPlatform().daemon().name("discord").start(() -> {
                 try {
