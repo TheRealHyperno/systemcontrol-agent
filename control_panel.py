@@ -2383,6 +2383,9 @@ class ControlPanel(tk.Tk):
         top.pack(fill="x", pady=(14, 6))
         tk.Label(top, text="Integrations", bg=C["bg"], fg=C["text"],
                   font=("sans-serif", 11, "bold")).pack(side="left")
+        tk.Button(top, text="Get New +", command=self._open_plugins_explorer,
+                   bg=C["accent"], fg="white", relief="flat", padx=10, pady=3,
+                   cursor="hand2").pack(side="right", padx=(0, 8))
         tk.Button(top, text="↻ Rescan", command=self._refresh_integrations,
                    bg=C["panel2"], fg=C["text"], relief="flat", padx=10, pady=3,
                    cursor="hand2").pack(side="right")
@@ -2519,6 +2522,185 @@ class ControlPanel(tk.Tk):
             except Exception:
                 pass
         return ENV_PATH
+
+    def _open_plugins_explorer(self):
+        """Community integration directory (systemcontrol-plugins) browser."""
+        w = tk.Toplevel(self)
+        w.title("Community Integrations (Plugins)")
+        w.geometry("920x620")
+        w.transient(self)
+        w.grab_set()
+
+        tk.Label(w, text="Browse installable integrations from the SystemC plugin directory.",
+                 bg=C["bg"], fg=C["text"], font=("sans-serif", 11, "bold")).pack(anchor="w", padx=14, pady=(10, 2))
+        bar = tk.Frame(w, bg=C["bg"])
+        bar.pack(fill="x", padx=14, pady=(0, 4))
+        tk.Label(bar, text="Search", bg=C["bg"], fg=C["text"]).pack(side="left", padx=(0, 6))
+        query = tk.StringVar()
+        ent = tk.Entry(bar, textvariable=query, width=40, bg=C["panel"], fg=C["text"])
+        ent.pack(side="left")
+        backed = tk.StringVar(value="python")
+        ttk.Combobox(bar, textvariable=backed, state="readonly",
+                     values=["python", "java"], width=8).pack(side="left", padx=(10, 4))
+        tk.Label(bar, text="backend", bg=C["bg"], fg=C["subtext"]).pack(side="left")
+        status = tk.Label(w, text="Loading registry…", bg=C["bg"], fg=C["green"],
+                          font=("monospace", 9))
+        status.pack(anchor="w", padx=14, pady=(0, 4))
+
+        body = tk.Frame(w, bg=C["bg"])
+        body.pack(fill="both", expand=True, padx=14, pady=(0, 4))
+        cols = ("id", "status", "backends", "name")
+        tree = ttk.Treeview(body, columns=cols, show="headings", height=14)
+        for c in cols:
+            tree.heading(c, text=c)
+            tree.column(c, width=120 if c != "name" else 200, anchor="w")
+        sc = ttk.Scrollbar(body, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=sc.set)
+        sc.pack(side="right", fill="y")
+        tree.pack(side="left", fill="both", expand=True)
+        detail = tk.Text(w, bg=C["panel"], fg=C["text"], wrap="word", height=7,
+                          relief="flat", padx=8, pady=6)
+        detail.pack(fill="x", padx=14, pady=(4, 8))
+
+        row_data = {}
+        def _populate(entries, filter_text=""):
+            tree.delete(*tree.get_children())
+            row_data.clear()
+            ft = filter_text.strip().lower()
+            for p in entries:
+                hay = " ".join(str(p.get(k, "")) for k in ("id","name","author","description","status","tags"))
+                if ft and ft not in hay.lower():
+                    continue
+                iid = p.get("id")
+                row_data[iid] = p
+                tree.insert("", "end", iid=iid, values=(
+                    iid, p.get("status", "untested"),
+                    ",".join(p.get("backends", []) or ["?"]), p.get("name", iid)))
+
+        def _show_detail(iid):
+            p = row_data.get(iid)
+            if not p:
+                return
+            detail.delete("1.0", "end")
+            detail.insert("end", f"name: {p.get('name','?')}\n")
+            detail.insert("end", f"author: {p.get('author','?')}\n")
+            detail.insert("end", f"status: {p.get('status','?')}\n")
+            detail.insert("end", f"backends: {p.get('backends',[])}\n")
+            detail.insert("end", f"tags: {p.get('tags',[])}\n")
+            detail.insert("end", f"version: {p.get('version','?')}\n")
+            detail.insert("end", "\n" + (p.get("description", "") or "") + "\n")
+            if p.get("repo"):
+                detail.insert("end", f"\nrepo: {p.get('repo')}\n")
+            if p.get("assets"):
+                a = p["assets"]
+                detail.insert("end", f"\nassets: java={a.get('java','—')} · python={a.get('python','—')}\n")
+
+        def _on_select(_e):
+            sel = tree.selection()
+            if sel:
+                _show_detail(sel[0])
+
+        tree.bind("<<TreeviewSelect>>", _on_select)
+        query.trace_add("write", lambda *_: _populate(entries_holder["list"], query.get()))
+
+        btn_row = tk.Frame(w, bg=C["bg"])
+        btn_row.pack(fill="x", padx=14, pady=(0, 10))
+        entries_holder = {"list": []}
+
+        def _fetch():
+            import json, urllib.request, hashlib, os
+            try:
+                url = os.environ.get("PLUGINS_INDEX") or \
+                    "https://raw.githubusercontent.com/TheRealHyperno/systemcontrol-plugins/main/index.json"
+                raw = urllib.request.urlopen(url, timeout=20).read()
+                try:
+                    import json as _j
+                    data = _j.loads(raw.decode())
+                except Exception:
+                    data = {}
+                if not isinstance(data, dict) or "plugins" not in data:
+                    data = {} if not isinstance(data, dict) else data
+                lst = data.get("plugins", []) if isinstance(data, dict) else []
+                # API fallback if empty
+                if not lst:
+                    try:
+                        import base64
+                        req = urllib.request.urlopen(
+                            "https://api.github.com/repos/TheRealHyperno/systemcontrol-plugins/contents/index.json?ref=main",
+                            timeout=20)
+                        api_obj = json.loads(req.read().decode())
+                        import base64 as b64
+                        dec = b64.b64decode(api_obj.get("content", "")).decode()
+                        data = json.loads(dec)
+                        lst = data.get("plugins", []) if isinstance(data, dict) else []
+                    except Exception as ex:
+                        lst = []
+                entries_holder["list"] = lst
+                self.after(0, lambda: _populate(lst, query.get()))
+                self.after(0, lambda: status.config(
+                    text=f"Loaded {len(lst)} plugins (api/v{data.get('api','')})"))
+            except Exception as ex:
+                self.after(0, lambda: status.config(text=f"error: {ex}"))
+
+        def _install():
+            sel = tree.selection()
+            if not sel:
+                messagebox.showinfo("Plugins", "Select a plugin first")
+                return
+            pid = sel[0]
+            p = row_data.get(pid)
+            if not p:
+                return
+            bval = backed.get().strip().lower()
+            if bval not in ("java", "python"):
+                bval = "python"
+            assets = p.get("assets") or {}
+            url = assets.get(bval)
+            if not url:
+                messagebox.showerror("Plugins", f"{pid} has no {bval} build (try the other backend)")
+                return
+            # sha
+            sha = (p.get("sha256") or {}).get(bval) if isinstance(p.get("sha256"), dict) else None
+            integrations = os.path.join(APP_DIR, "integrations")
+            os.makedirs(integrations, exist_ok=True)
+            ext = ".py" if url.lower().endswith(".py") else ".jar"
+            dest = os.path.join(integrations, pid + ext)
+            status.config(text=f"Downloading {pid}…")
+            import threading
+
+            def _worker():
+                try:
+                    import urllib.request, hashlib
+                    urllib.request.urlretrieve(url, dest)
+                    if sha and isinstance(sha, str) and len(sha) == 64:
+                        md = hashlib.sha256()
+                        with open(dest, "rb") as fh:
+                            for chunk in iter(lambda: fh.read(65536), b""):
+                                md.update(chunk)
+                        if md.hexdigest().lower() != sha.lower():
+                            os.remove(dest)
+                            raise Exception("sha256 mismatch")
+                    self.after(0, lambda: status.config(text=f"installed {pid} -> {dest}; add {pid} to INTEGRATIONS=, restart bot"))
+                    self.after(0, lambda: self._refresh_integrations())
+                    self.after(0, lambda: messagebox.showinfo(
+                        "Installed", f"{pid} ({bval}) installed to integrations/.\n\nAdd {pid} to INTEGRATIONS= (or 'all') in .env, then restart."))
+                except Exception as ex:
+                    self.after(0, lambda: status.config(text=f"error: {ex}"))
+                    self.after(0, lambda: messagebox.showerror("Install failed", str(ex)))
+            threading.Thread(target=_worker, daemon=True).start()
+
+        tk.Button(btn_row, text="Install ↓", command=_install,
+                   bg=C["accent"], fg="white", relief="flat", padx=12, pady=4,
+                   cursor="hand2").pack(side="left")
+        tk.Button(btn_row, text="Reload", command=lambda: threading.Thread(target=_fetch, daemon=True).start(),
+                   bg=C["panel2"], fg=C["text"], relief="flat", padx=10, pady=4,
+                   cursor="hand2").pack(side="left", padx=(8, 0))
+        tk.Button(btn_row, text="Close", command=w.destroy,
+                   bg=C["panel2"], fg=C["text"], relief="flat", padx=10, pady=4,
+                   cursor="hand2").pack(side="right")
+
+        threading.Thread(target=_fetch, daemon=True).start()
+
 
     def _refresh_integrations(self):
         """Rebuild the cards from the integrations folder and the INTEGRATIONS value in .env."""
