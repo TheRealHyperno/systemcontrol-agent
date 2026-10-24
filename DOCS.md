@@ -1,7 +1,7 @@
 # SystemC Drovex — complete documentation
 
 Covers the **Java** port (the `java` branch) and notes where the **Python** original
-(the `main` branch) differs. Everything applies to release **v1.0.8**.
+(the `main` branch) differs. Everything applies to release **v1.0.9**.
 
 Contents:
 
@@ -101,7 +101,8 @@ Needs python3 only if you want python-compat integrations or the python version.
 | `systemc models` | list the Ollama models reachable at `OLLAMA_HOST` (first smoke test after install) |
 | `systemc service install \| status \| stop \| restart \| uninstall \| linger [--profile id]` | squash the bot into a systemd **user unit** — see section 14 |
 | `systemc update [--check \| --rollback] [--repo owner/name] [--pre-release]` | self-update from GitHub releases: always takes GitHub's **Latest** release (by publication date, not tag number) → download → sha256-verify → back up → replace (see also the Updates panel tab) |
-| `systemc config [show \| set KEY VALUE]` | show the backend/version/update-repo, or write a KEY (e.g. `UPDATE_REPO`) into `.env` from the terminal |
+| `systemc plugins [list [filter] \| install <id> [java\|python]]` | community integration (plugin) directory: list the registry (filter by name/tag/status) and download an integration into `integrations/` for use by the agent |
+| `systemc config [show \| set KEY VALUE]` | show the backend/version/update-repo, or write a KEY (e.g. `UPDATE_REPO`, `BACKEND`) into `.env` from the terminal |
 | `systemc version` / `systemc jar` | which release/jar is running |
 
 First run:

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # systemc — launcher for SystemC Drovex (Java).
-#   systemc [run|panel|tui|models|service|update|config|version]
+#   systemc [run|panel|tui|models|service|update|config|plugins|version]
 set -euo pipefail
 
 SOURCE="${BASH_SOURCE[0]}"
@@ -163,6 +163,7 @@ case "$cmd" in
             fi ;;
       *)    echo "usage: systemc config [show|set KEY VALUE]" >&2; exit 1 ;;
     esac ;;
+  plugins) shift 2>/dev/null || true; exec "$JAVA_BIN" -cp "$JAR" systemc.Plugins "$@" ;;
   jar)     echo "$JAR" ;;
   service)
     if [ "$BACKEND" = "python" ] && [ "${2:-}" = "install" ]; then
@@ -249,5 +250,5 @@ case "$ACTION" in
 esac
 SVC
     ;;
-  *) echo "usage: systemc [run|panel|tui|models|service|update|config|version]"; exit 1 ;;
+  *) echo 'usage: systemc [run|panel|tui|models|service|update|config|plugins|version]'; exit 1 ;;
 esac

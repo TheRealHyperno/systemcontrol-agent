@@ -61,7 +61,7 @@ say "Installed into $PREFIX"
 
 # ── backend choice: the only question is "do you want java or python" ─
 BACKEND_ANSWER=""
-if [ -r /dev/tty ]; then
+if [ -r /dev/tty ] && [ -w /dev/tty ]; then
   printf "Backend — run the java or the python agent? [java]: " > /dev/tty
   read -r BACKEND_ANSWER < /dev/tty || BACKEND_ANSWER=""
 fi
