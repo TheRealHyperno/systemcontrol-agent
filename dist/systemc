@@ -28,37 +28,138 @@ find_java() {
 JAVA_BIN="$(find_java)"
 cd "$PREFIX"    # state files (.env, .history, .memory, ...) live next to the install
 
+set_key() {   # set_key KEY VALUE — writes $PREFIX/.env
+  touch "$PREFIX/.env"
+  if grep -qE "^$1=" "$PREFIX/.env"; then
+    sed -i "s|^$1=.*|$1=$2|" "$PREFIX/.env"
+  else
+    echo "$1=$2" >> "$PREFIX/.env"
+  fi
+}
+
+# backend: the only thing BACKEND= chooses is "do you want java or python".
+# BACKEND lives in .env so both backends and every tool read the same choice.
+BACKEND="$(sed -n 's/^BACKEND=//p' "$PREFIX/.env" 2>/dev/null | head -n1 | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]' 2>/dev/null || true)"
+BACKEND="${BACKEND:-java}"
+PY_MAIN="$PREFIX/backend/python/main.py"
+
+REPO="$(sed -n 's/^UPDATE_REPO=//p' "$PREFIX/.env" 2>/dev/null | head -n1 | tr -d '[:space:]' || true)"
+REPO="${REPO:-TheRealHyperno/systemcontrol-agent}"
+
+# install the python backend: fetch the newest release carrying a python
+# build (systemc-*.zip, by publication date - GitHub's Latest release may be a
+# java-only one), sha256-verify, unpack, pip deps
+install_python_backend() {
+  command -v curl >/dev/null || { echo "error: curl not found" >&2; return 1; }
+  command -v unzip >/dev/null || { echo "error: unzip not found (dnf install unzip)" >&2; return 1; }
+  local TMP ZIP_URL SHA_URL TAG
+  TMP="$(mktemp -d)" || { echo "error: no temp dir" >&2; return 1; }
+  trap 'rm -rf "$TMP"' RETURN
+  echo "▸ Finding the newest python build on $REPO…"
+  local REL_JSON; REL_JSON="$(curl -fsSL "https://api.github.com/repos/$REPO/releases?per_page=30")" || { echo "error: couldn't reach GitHub API for $REPO" >&2; return 1; }
+  ZIP_URL="$(echo "$REL_JSON" | grep -oE 'https://[^"]+/releases/download/[^"]+/systemc-[^"/]+\.zip' | head -n1)"
+  SHA_URL="$(echo "$REL_JSON" | grep -oE 'https://[^"]+/systemc-[^"/]+\.zip\.sha256' | head -n1)"
+  [ -n "$ZIP_URL" ] || { echo "error: no release on $REPO carries a python build (systemc-*.zip asset)" >&2; return 1; }
+  TAG="$(echo "$ZIP_URL" | sed 's|.*/releases/download/||; s|/systemc-.*||')"
+  echo "▸ Python build found: $TAG"
+  echo "▸ Downloading $ZIP_URL"
+  curl -fsSL "$ZIP_URL" -o "$TMP/pb.zip" || { echo "error: download failed" >&2; return 1; }
+  if [ -n "$SHA_URL" ]; then
+    curl -fsSL "$SHA_URL" 2>/dev/null | awk '{print $1}' > "$TMP/pb.sha256"
+    if [ -s "$TMP/pb.sha256" ]; then
+      (cd "$TMP" && printf '%s  %s\n' "$(cat pb.sha256)" pb.zip | sha256sum -c - >/dev/null 2>&1) \
+        && echo "▸ sha256 verified" \
+        || { echo "error: sha256 mismatch - refusing the python backend" >&2; return 1; }
+    fi
+  fi
+  mkdir -p "$PREFIX/backend/python"
+  unzip -oq "$TMP/pb.zip" -d "$PREFIX/backend/python" || { echo "error: unzip failed" >&2; return 1; }
+  [ -f "$PY_MAIN" ] || { echo "error: $TAG unpacked but no main.py — not a python backend zip?" >&2; return 1; }
+  # one shared .env: the python backend reads ./.env in its own dir → symlink it
+  [ -e "$PREFIX/backend/python/.env" ] || ln -s "$PREFIX/.env" "$PREFIX/backend/python/.env"
+  if [ -f "$PREFIX/backend/python/requirements.txt" ]; then
+    if command -v pip3 >/dev/null 2>&1; then
+      echo "▸ pip3 install --user dependencies…"
+      pip3 install --user -r "$PREFIX/backend/python/requirements.txt" >/dev/null 2>&1 \
+        || echo "▸ note: pip deps failed - run: pip3 install --user -r backend/python/requirements.txt"
+    else
+      echo "▸ note: pip3 not found - install python3-pip, then: pip3 install --user -r backend/python/requirements.txt"
+    fi
+  fi
+  set_key BACKEND python
+  echo "▸ Python backend installed ($TAG). Run it with: systemc run  (java stays available: systemc config set backend java)"
+}
+
+# first run, no .env yet → ask once in the terminal: java or python
+ensure_backend_choice() {
+  [ -f "$PREFIX/.env" ] && return 0
+  [ -r /dev/tty ] || return 0
+  local ANS=""
+  printf "Backend — run the java or the python agent? [java]: " > /dev/tty
+  read -r ANS < /dev/tty || ANS=""
+  ANS="$(echo "${ANS:-java}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+  case "$ANS" in
+    python)
+      if ! install_python_backend; then echo "(kept java; switch later with: systemc config set backend python)" >&2; fi ;;
+    java) set_key BACKEND java ;;
+    *) set_key BACKEND java ;;
+  esac
+}
+
 cmd="${1:-run}"
 case "$cmd" in
-  run)     exec "$JAVA_BIN" -jar "$JAR" "$@" ;;
-  panel)   shift 2>/dev/null || true; exec "$JAVA_BIN" -cp "$JAR" systemc.ControlPanel ;;
-  tui)     shift 2>/dev/null || true; exec "$JAVA_BIN" -cp "$JAR" systemc.Tui "$@" ;;
+  run)     ensure_backend_choice
+           BACKEND="$(sed -n 's/^BACKEND=//p' "$PREFIX/.env" 2>/dev/null | head -n1 | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]' 2>/dev/null || true)"
+           BACKEND="${BACKEND:-java}"
+           if [ "$BACKEND" = "python" ]; then
+             [ -f "$PY_MAIN" ] || { echo "BACKEND=python but the python backend isn't installed." >&2
+                                    echo "install it with:  systemc config set backend python" >&2; exit 1; }
+             command -v python3 >/dev/null 2>&1 || { echo "error: python3 not found (dnf install python3-pip)" >&2; exit 1; }
+             [ -e "$PREFIX/backend/python/.env" ] || ln -s "$PREFIX/.env" "$PREFIX/backend/python/.env"
+             cd "$PREFIX/backend/python"      # the python backend expects its files next to proc cwd
+             exec python3 main.py "${@:2}"
+           fi
+           exec "$JAVA_BIN" -jar "$JAR" "$@" ;;
+  panel)   [ "$BACKEND" != "java" ] && echo "(backends note: the panel configures the shared .env; the bots run with BACKEND=$BACKEND via systemc run)" >&2
+           shift 2>/dev/null || true; exec "$JAVA_BIN" -cp "$JAR" systemc.ControlPanel ;;
+  tui)     [ "$BACKEND" != "java" ] && echo "(backends note: the TUI configures the shared .env; the bots run with BACKEND=$BACKEND via systemc run)" >&2
+           shift 2>/dev/null || true; exec "$JAVA_BIN" -cp "$JAR" systemc.Tui "$@" ;;
   models)  exec "$JAVA_BIN" -cp "$JAR" systemc.Providers models ;;
   update)  shift 2>/dev/null || true; exec "$JAVA_BIN" -cp "$JAR" systemc.Updater "$@" ;;
   version) V="$(basename "$JAR" | sed -e 's/^systemc-java-//; s/\.jar$//')"
-           echo "SystemC v$V — java backend (release line shared with the python backend)"
+           case "$V" in v*|alpha*) DISP="$V" ;; *) DISP="v$V" ;; esac
+           echo "SystemC $DISP — java engine · BACKEND=$BACKEND"
            echo "jar: $JAR" ;;
   config)
     shift 2>/dev/null || true
     case "${1:-show}" in
       show) V="$(basename "$JAR" | sed -e 's/^systemc-java-//; s/\.jar$//')"
-            echo "backend:   java (python backend ships in the same repo's releases)"
-            echo "version:   $V"
-            echo "repo:      ${UPDATE_REPO:-TheRealHyperno/systemcontrol-agent}"
-            echo "pre-release: ${UPDATE_PRERELEASE:-0}" ;;
+            case "$V" in v*|alpha*) DISP="$V" ;; *) DISP="v$V" ;; esac
+            echo "backend:   $BACKEND  (BACKEND=java|python in .env — changes what 'systemc run' starts)"
+            echo "version:   $DISP"
+            echo "repo:      $REPO"
+            echo "pre-release: $(sed -n 's/^UPDATE_PRERELEASE=//p' "$PREFIX/.env" 2>/dev/null | head -n1 || true)" ;;
       set)  KEY="${2:-}"; VAL="${3:-}"
             [ -n "$KEY" ] && [ -n "$VAL" ] || { echo "usage: systemc config set KEY VALUE" >&2; exit 1; }
-            touch "$PREFIX/.env"
-            if grep -qE "^${KEY}=" "$PREFIX/.env"; then
-              sed -i "s|^${KEY}=.*|${KEY}=${VAL}|" "$PREFIX/.env"
+            if [ "$KEY" = "backend" ]; then
+              case "$(echo "$VAL" | tr '[:upper:]' '[:lower:]')" in
+                java)  set_key BACKEND java; echo "backend → java (systemc run)" ;;
+                python)
+                  install_python_backend ;;
+                *) echo "error: backend must be java or python" >&2; exit 1 ;;
+              esac
             else
-              echo "${KEY}=${VAL}" >> "$PREFIX/.env"
-            fi
-            echo "${KEY}=${VAL} → $PREFIX/.env" ;;
+              set_key "$KEY" "$VAL"
+              echo "${KEY}=${VAL} → $PREFIX/.env"
+            fi ;;
       *)    echo "usage: systemc config [show|set KEY VALUE]" >&2; exit 1 ;;
     esac ;;
   jar)     echo "$JAR" ;;
   service)
+    if [ "$BACKEND" = "python" ] && [ "${2:-}" = "install" ]; then
+      echo "error: 'systemc service install' installs the java engine's systemd unit." >&2
+      echo "For BACKEND=python, start the bots with:  systemc run" >&2; exit 1
+    fi
     ACTION=""
     PROFILE=""
     ARGS=("${@:2}")

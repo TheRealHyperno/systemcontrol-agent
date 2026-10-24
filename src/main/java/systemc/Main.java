@@ -47,6 +47,10 @@ public final class Main {
                 Or run the full setup in the control panel:
                     java -cp systemc-java.jar systemc.ControlPanel   (→ Setup tab)
                 Or configure in a terminal:      java -cp systemc-java.jar systemc.Tui
+
+                Backend note: BACKEND=java|python in .env chooses what 'systemc run'
+                starts (java = this engine; python = install the python build with
+                systemc config set backend python). Both share the same .env.
                 """);
             return;
         }

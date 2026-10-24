@@ -21,7 +21,7 @@ systemc tui                                            # TUI control panel (SSH 
 java -cp target/systemc-java.jar systemc.Providers models   # list Ollama models
 systemc service install        # start the bots at login/boot (systemd user unit)
 systemc update --check         # check GitHub's Latest release for a newer version
-systemc config                 # backend / version / update repo (set with: config set KEY VALUE)
+systemc config                 # backend (java|python) / version / repo — set with: config set KEY VALUE
 ```
 
 The Swing control panel does full first-run setup: the **Setup** tab writes your
@@ -33,8 +33,9 @@ permission) into `.env`. **Profiles** manages multi-instance profiles
 Pull Dependencies). **Run & Logs** starts/stops instances with auto-restart and
 tails their logs. **Dependencies** checks the environment (java/ollama/pip/tar)
 and pulls per-profile pip packages. **Updates** checks GitHub releases, installs
-(v1.0.4 adds `systemc update` as the CLI equivalent), and rolls back from
-backups.
+(v1.0.6 adds `systemc update` as the CLI equivalent), and rolls back from
+backups. The **backend** choice is simply "do you want java or python" — asked
+at setup, switched with `systemc config set backend python|java`.
 
 Integrations (extra agent tools as Java SPI jars or python-compat `.py` files,
 with settings menus in the Swing panel / TUI / web API) — see

@@ -1,7 +1,7 @@
 # SystemC Drovex — complete documentation
 
 Covers the **Java** port (the `java` branch) and notes where the **Python** original
-(the `main` branch) differs. Everything applies to release **v1.0.4**.
+(the `main` branch) differs. Everything applies to release **v1.0.6**.
 
 Contents:
 
@@ -54,13 +54,15 @@ Everything lives in **`TheRealHyperno/systemcontrol-agent`**:
 | `systemcontrol-java` | a legacy one-file shim repo keeping the old `…/systemcontrol-java/install.sh` one-liner URL alive by forwarding |
 
 Releases (tarballs + sha256) live on `systemcontrol-agent`'s release page:
-v1.0.0–v1.0.5 were java-numbered (v1.0.5 is the bridge release carrying this new engine); from v1.0.5 onward the java backend **shares one
-release line with the python backend** — same tags, same "Latest" release, no
-separate `java-` numbering. A java build rides along in a release as the
-`systemc-java-linux-x64.tar.gz` (+ `.sha256`) asset; releases without it are
-python-only and the java updater will tell you so instead of guessing by tag
-number. `systemc update` always pulls GitHub's Latest release — newest
-publication wins, never the highest tag.
+v1.0.0–v1.0.5 were java-numbered; the version lines are **merged** from there
+on — java and python backends share one release line (same repo, same tag
+space, same "Latest"), each attaching its own asset(s): the java build ships
+as `systemc-java-linux-x64.tar.gz` (+ `.sha256`), the python build as
+`systemc-<tag>.zip` (+ `.sha256`). A release carrying only one backend's asset
+is fine — the other backend's tooling reports it. Both backends choose "latest"
+by publication date, never by tag number. (Choosing java vs python at
+install/run time — the BACKEND key — is described under
+[Backends](#backends--backendjavapython) below.)
 
 ## 3. Installing
 
@@ -194,6 +196,28 @@ own `DEPENDENCIES=` key (Pulled from the Profiles or Dependencies tab).
 | `AGENT_ACCOUNT_MODE` | `own` / `other` — set by the Save config button |
 | `AGENT_ALLOW_ELEVATED` | `1` exposes `run_shell_elevated` under the run-as account (an approval still comes before every elevated command) |
 
+### Backends — BACKEND=java|python
+
+There are two interchangeable backends of the same agent in this repo, and the
+whole "backend" concept is just the question *do you want java or python*:
+
+- chosen at setup: the installer and the first `systemc run` with no `.env` ask
+  once in the terminal (default **java**);
+- switchable any time: `systemc config set backend python` downloads the newest
+  release carrying a python build (`systemc-*.zip`, sha256-verified), unpacks it
+  under `backend/python/`, pulls its pip deps and sets `BACKEND=python`;
+  `systemc config set backend java` flips back — the jar stays installed either
+  way;
+- `systemc run` dispatches by `BACKEND`: java → this engine's jar, python →
+  `backend/python/main.py` (whose `.env` is a symlink to the shared install
+  `.env`, so tokens/config are set once and work under both);
+- BACKEND lives in `.env`, so the Swing panel, TUI and web API all apply it on
+  the next start.
+
+| Key | Meaning |
+|---|---|
+| `BACKEND` | `java` (default) or `python` — what `systemc run` starts |
+
 ### Updates
 
 | Key | Meaning |
@@ -202,6 +226,7 @@ own `DEPENDENCIES=` key (Pulled from the Profiles or Dependencies tab).
 | `UPDATE_PRERELEASE` | `1` → also offer the newest published release even when it's a pre-release (still by publication date, never by tag number) |
 
 Both are settable from the terminal with `systemc config set UPDATE_REPO …`.
+
 
 ## 6. Architecture
 
