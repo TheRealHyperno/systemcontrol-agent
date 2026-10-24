@@ -59,6 +59,22 @@ tar -xzf "$ARCHIVE" -C "$PREFIX" --strip-components=1
 chmod +x "$PREFIX/bin/systemc" 2>/dev/null || true
 say "Installed into $PREFIX"
 
+# ── backend choice: the only question is "do you want java or python" ─
+BACKEND_ANSWER=""
+if [ -r /dev/tty ]; then
+  printf "Backend — run the java or the python agent? [java]: " > /dev/tty
+  read -r BACKEND_ANSWER < /dev/tty || BACKEND_ANSWER=""
+fi
+BACKEND_ANSWER="$(echo "${BACKEND_ANSWER:-java}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+case "$BACKEND_ANSWER" in
+  python)
+    if "$PREFIX/bin/systemc" config set backend python; then :; else
+      warn "python backend install failed — switch later with: systemc config set backend python"
+    fi ;;
+  java) : ;;   # default; recorded on first run / whenever .env is written
+  *) warn "unknown backend '$BACKEND_ANSWER' (java|python) — using java" ;;
+esac
+
 BIN_DIR="$HOME/.local/bin"
 mkdir -p "$BIN_DIR"
 ln -sf "$PREFIX/bin/systemc" "$BIN_DIR/systemc"
