@@ -171,6 +171,10 @@ public final class Updater {
             throw new IOException("tar failed: " + new String(out));
         log.accept("extracted " + tag + " over " + app);
 
+        // drop versioned jars of other releases so the launcher runs the new one
+        int pruned = pruneOldJars(app, tag);
+        if (pruned > 0) log.accept("removed " + pruned + " old systemc-java-*.jar from lib/");
+
         // clean the tmp download
         Files.walk(tmp).sorted(Comparator.reverseOrder()).forEach(f -> f.toFile().delete());
 
@@ -184,6 +188,25 @@ public final class Updater {
         res.put("tag", tag);
         res.put("backup", backup.toString());
         return res;
+    }
+
+    /** Deletes every lib/systemc-java-<v>.jar whose <v> isn't {@code keepVer} (it self-updates too). */
+    static int pruneOldJars(Path app, String keepVer) {
+        String want = normalize(keepVer);
+        int n = 0;
+        Path lib = app.resolve("lib");
+        try (var st = Files.list(lib)) {
+            for (Path j : (Iterable<Path>) st.toList()) {
+                String name = j.getFileName().toString();
+                if (!name.matches("systemc-java-.+\\.jar")) continue;
+                String ver = name.substring("systemc-java-".length(), name.length() - ".jar".length());
+                if (!normalize(ver).equals(want)) {
+                    Files.deleteIfExists(j);
+                    n++;
+                }
+            }
+        } catch (IOException ignored) {}
+        return n;
     }
 
     /** Copies the current install's bin/lib/share (+dist) into .updates/backups/<tag>-<ts>/ . */
@@ -226,8 +249,12 @@ public final class Updater {
         Path app = appDir();
         for (String sub : List.of("bin", "lib", "share", "dist"))
             copyTree(src.resolve(sub), app.resolve(sub));
+        // restore really restores: drop jars of the release we rolled back FROM
+        String backTo = String.valueOf(chosen.get("name")).replaceFirst("-\\d{8}-\\d{6}$", "");
+        int pruned = pruneOldJars(app, backTo);
+        if (pruned > 0 && log != null) log.accept("removed " + pruned + " newer systemc-java-*.jar from lib/");
         Map<String, Object> state = loadState();
-        state.put("installed_tag", String.valueOf(chosen.get("name")).replaceFirst("-\\d{8}-\\d{6}$", ""));
+        state.put("installed_tag", backTo);
         state.put("rolled_back_at", java.time.Instant.now().toString());
         saveState(state);
         log.accept("restored " + src);

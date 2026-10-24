@@ -7,7 +7,7 @@ SOURCE="${BASH_SOURCE[0]}"
 [ -L "$SOURCE" ] && SOURCE="$(readlink -f "$SOURCE")"   # follow the ~/.local/bin symlink
 HERE="$(cd "$(dirname "$SOURCE")" && pwd)"               # .../bin
 PREFIX="$(cd "$HERE/.." && pwd)"                              # install root
-JAR="$(ls -1 "$PREFIX"/lib/systemc-java-*.jar 2>/dev/null | head -n1 || true)"
+JAR="$(ls -1 "$PREFIX"/lib/systemc-java-*.jar 2>/dev/null | sort -V | tail -n1 || true)"
 [ -n "$JAR" ] || { echo "error: no systemc-java-*.jar in $PREFIX/lib" >&2; exit 1; }
 
 find_java() {
