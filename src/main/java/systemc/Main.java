@@ -44,7 +44,9 @@ public final class Main {
                     OLLAMA_API_KEY=...                     # ollama.com cloud
                     AGENT_PROVIDER=anthropic
                     ANTHROPIC_API_KEY=...
-                Or run the Swing control panel:  java -cp systemc-java.jar systemc.ControlPanel
+                Or run the full setup in the control panel:
+                    java -cp systemc-java.jar systemc.ControlPanel   (→ Setup tab)
+                Or configure in a terminal:      java -cp systemc-java.jar systemc.Tui
                 """);
             return;
         }

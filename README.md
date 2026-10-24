@@ -20,7 +20,20 @@ java -cp target/systemc-java.jar systemc.ControlPanel   # Swing control panel (d
 systemc tui                                            # TUI control panel (SSH / no desktop)
 java -cp target/systemc-java.jar systemc.Providers models   # list Ollama models
 systemc service install        # start the bots at login/boot (systemd user unit)
+systemc update --check         # check GitHub releases for a newer version
 ```
+
+The Swing control panel does full first-run setup: the **Setup** tab writes your
+Discord/Stoat tokens, allowed channels, bot modes and wake words, the Ollama
+source (local/cloud) with an ordered key pool and model picker, and the
+workspace/account mode (run as another user via `runuser`, ACL grants, elevated
+permission) into `.env`. **Profiles** manages multi-instance profiles
+(New / Import archive / Export archive / Migrate .env, per-profile Start and
+Pull Dependencies). **Run & Logs** starts/stops instances with auto-restart and
+tails their logs. **Dependencies** checks the environment (java/ollama/pip/tar)
+and pulls per-profile pip packages. **Updates** checks GitHub releases, installs
+(v1.0.4 adds `systemc update` as the CLI equivalent), and rolls back from
+backups.
 
 Integrations (extra agent tools as Java SPI jars or python-compat `.py` files,
 with settings menus in the Swing panel / TUI / web API) — see

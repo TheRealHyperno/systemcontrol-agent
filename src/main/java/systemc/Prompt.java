@@ -10,7 +10,7 @@ public final class Prompt {
     public static final String RELEASE = "Drovex";
     public static final String RELEASE_STAGE = "beta";
     public static final String DISPLAY = RELEASE + " (" + RELEASE_STAGE + ")";
-    public static final String VERSION_ID = "java-1.0.0";
+    public static final String VERSION_ID = "java-" + Updater.installedVersion();
 
     public static String banner() {
         return """

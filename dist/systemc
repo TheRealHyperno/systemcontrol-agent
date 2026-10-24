@@ -34,7 +34,10 @@ case "$cmd" in
   panel)   shift 2>/dev/null || true; exec "$JAVA_BIN" -cp "$JAR" systemc.ControlPanel ;;
   tui)     shift 2>/dev/null || true; exec "$JAVA_BIN" -cp "$JAR" systemc.Tui "$@" ;;
   models)  exec "$JAVA_BIN" -cp "$JAR" systemc.Providers models ;;
-  version) echo "SystemC Drovex (Java port) — python parity alpha"; echo "jar: $JAR" ;;
+  update)  shift 2>/dev/null || true; exec "$JAVA_BIN" -cp "$JAR" systemc.Updater "$@" ;;
+  version) V="$(basename "$JAR" | sed -e 's/^systemc-java-//; s/\.jar$//')"
+           echo "SystemC Drovex (Java port) v$V"
+           echo "jar: $JAR" ;;
   jar)     echo "$JAR" ;;
   service)
     ACTION=""

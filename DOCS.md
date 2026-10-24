@@ -1,7 +1,7 @@
 # SystemC Drovex — complete documentation
 
 Covers the **Java** port (the `java` branch) and notes where the **Python** original
-(the `main` branch) differs. Everything applies to release **v1.0.3**.
+(the `main` branch) differs. Everything applies to release **v1.0.4**.
 
 Contents:
 
@@ -54,7 +54,7 @@ Everything lives in **`TheRealHyperno/systemcontrol-agent`**:
 | `systemcontrol-java` | a legacy one-file shim repo keeping the old `…/systemcontrol-java/install.sh` one-liner URL alive by forwarding |
 
 Releases (tarballs + sha256) live on `systemcontrol-agent`'s release page:
-v1.0.0–v1.0.3 (tag = java version; the python code is branch-based, not release-based).
+v1.0.0–v1.0.4 (tag = java version; the python code is branch-based, not release-based).
 
 ## 3. Installing
 
@@ -92,6 +92,7 @@ Needs python3 only if you want python-compat integrations or the python version.
 | `systemc tui` | **terminal** control panel — same configuration over SSH/no desktop. Arrow keys/Enter/j/k, `q` walks back, secrets masked |
 | `systemc models` | list the Ollama models reachable at `OLLAMA_HOST` (first smoke test after install) |
 | `systemc service install \| status \| stop \| restart \| uninstall \| linger [--profile id]` | squash the bot into a systemd **user unit** — see section 14 |
+| `systemc update [--check \| --rollback] [--repo owner/name] [--pre-release]` | self-update from GitHub releases: check → download → sha256-verify → back up → replace (see also the Updates panel tab) |
 | `systemc version` / `systemc jar` | which release/jar is running |
 
 First run:
@@ -173,7 +174,25 @@ sections explain behavior behind each group.
 ### Profiles
 
 `SYSTEMC_PROFILE_ID` picks a running profile when started with `--profile <id>`.
-`SINGLE_PROFILE`, profiles.json lives in `.profiles/profiles.json`.
+`SINGLE_PROFILE`, profiles.json lives in `.profiles/profiles.json`. Per-profile env
+overlays live at `.profiles/<id>.env`; per-profile pip packages go into the profile's
+own `DEPENDENCIES=` key (Pulled from the Profiles or Dependencies tab).
+
+### Workspace & account (Setup tab)
+
+| Key | Meaning |
+|---|---|
+| `AGENT_WORKDIR` | sandbox dir for shell/file tools (Setup tab's workspace field) |
+| `AGENT_RUN_AS_USER` | run instances of profiles as this user (`runuser` as root, `sudo -n` otherwise); empty = panel's own account |
+| `AGENT_ACCOUNT_MODE` | `own` / `other` — set by the Save config button |
+| `AGENT_ALLOW_ELEVATED` | `1` exposes `run_shell_elevated` under the run-as account (an approval still comes before every elevated command) |
+
+### Updates
+
+| Key | Meaning |
+|---|---|
+| `UPDATE_REPO` | GitHub repo to track (default `TheRealHyperno/systemcontrol-agent`) |
+| `UPDATE_PRERELEASE` | `1` → also see/offer pre-release tags |
 
 ## 6. Architecture
 
@@ -365,9 +384,10 @@ systemc service linger                       # systemd starts it at TRUE boot, p
 | Surface | For | Highlights |
 |---|---|---|
 | `systemc run` | servers/SSH | the bot process + web console |
-| Swing panel | desktop | Overview (live log, links), Sessions, Approvals, Profiles, Personalize, **Integrations**; branded with the SystemC logo/favicon; macOS-ish FlatLaf theme |
+| Swing panel | desktop | 10 tabs, python-panel parity: **Overview** (quick actions + panel log) · **Setup** (tokens, channels, bot modes, wake words, Ollama local/cloud + ordered key pool, model picker with *Fetch available models*, workspace dir + run-as-user with `Set up / Verify directory` and `Allow panel to run as user`, *Save config to .env*) · **Profiles** (cards with model/platform/deps summary; New / Import archive / Export archive / Migrate .env dialogs with the secrets warning; per-profile Start / Stop / Pull Dependencies / Edit .env / Delete) · **Personalize** · **Dependencies** (java/ollama/python3/pip/tar health + per-profile `DEPENDENCIES=` pip packages with Pull) · **Run & Logs** (Start/Stop per instance, auto-restart-on-crash checkbox, Open web UI, live log tail of the selected instance) · **Approvals** · **Integrations** · **Sessions** · **Updates** (Check for updates / Update now / Roll back / Show backups, pre-release checkbox, UPDATERepo field); branded with the SystemC logo/favicon; macOS-ish FlatLaf theme |
 | TUI | SSH/no-DE | bots / agent / console / subagents / **integrations** / startup / `.env` in `$EDITOR` |
 | web console | everyone | chat with the agent in the browser; same tool endpoints |
+| `systemc update` | servers/SSH | CLI self-update: `--check` / (default: install) / `--rollback`, `--repo owner/name`, `--pre-release` — same engine as the Updates tab |
 
 ## 16. Python version: parity and differences
 
