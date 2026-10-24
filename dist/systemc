@@ -42,6 +42,7 @@ set_key() {   # set_key KEY VALUE — writes $PREFIX/.env
 BACKEND="$(sed -n 's/^BACKEND=//p' "$PREFIX/.env" 2>/dev/null | head -n1 | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]' 2>/dev/null || true)"
 BACKEND="${BACKEND:-java}"
 PY_MAIN="$PREFIX/backend/python/main.py"
+PY_PANEL="$PREFIX/backend/python/control_panel.py"
 
 REPO="$(sed -n 's/^UPDATE_REPO=//p' "$PREFIX/.env" 2>/dev/null | head -n1 | tr -d '[:space:]' || true)"
 REPO="${REPO:-TheRealHyperno/systemcontrol-agent}"
@@ -120,9 +121,17 @@ case "$cmd" in
              exec python3 main.py "${@:2}"
            fi
            exec "$JAVA_BIN" -jar "$JAR" "$@" ;;
-  panel)   [ "$BACKEND" != "java" ] && echo "(backends note: the panel configures the shared .env; the bots run with BACKEND=$BACKEND via systemc run)" >&2
-           shift 2>/dev/null || true; exec "$JAVA_BIN" -cp "$JAR" systemc.ControlPanel ;;
-  tui)     [ "$BACKEND" != "java" ] && echo "(backends note: the TUI configures the shared .env; the bots run with BACKEND=$BACKEND via systemc run)" >&2
+  panel)   if [ "$BACKEND" = "python" ]; then
+             [ -f "$PY_PANEL" ] || { echo "BACKEND=python but the python backend isn't installed." >&2
+                                    echo "install it with:  systemc config set backend python" >&2; exit 1; }
+             command -v python3 >/dev/null 2>&1 || { echo "error: python3 not found" >&2; exit 1; }
+             python3 -c "import tkinter" 2>/dev/null || { echo "error: tkinter missing (dnf install python3-tkinter)" >&2; exit 1; }
+             [ -e "$PREFIX/backend/python/.env" ] || ln -s "$PREFIX/.env" "$PREFIX/backend/python/.env"
+             cd "$PREFIX/backend/python"      # python side expects its files next to proc cwd
+             exec python3 control_panel.py "${@:2}"
+           fi
+           exec "$JAVA_BIN" -cp "$JAR" systemc.ControlPanel ;;
+  tui)     [ "$BACKEND" = "python" ] && [ -d "$PREFIX/backend/python" ] && echo "(bot/tui note: the java TUI configures the shared .env; the bots run with BACKEND=$BACKEND)" >&2
            shift 2>/dev/null || true; exec "$JAVA_BIN" -cp "$JAR" systemc.Tui "$@" ;;
   models)  exec "$JAVA_BIN" -cp "$JAR" systemc.Providers models ;;
   update)  shift 2>/dev/null || true; exec "$JAVA_BIN" -cp "$JAR" systemc.Updater "$@" ;;

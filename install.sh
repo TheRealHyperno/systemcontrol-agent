@@ -91,7 +91,7 @@ if command -v desktop-file-install >/dev/null 2>&1 || [ -d "$HOME/.local/share/a
 [Desktop Entry]
 Type=Application
 Name=SystemC Control Panel
-Comment=SystemC Drovex (Java) — bots, approvals, profiles
+Comment=SystemC — bots, approvals, profiles
 Exec=$BIN_DIR/systemc panel
 Icon=systemc
 Terminal=false

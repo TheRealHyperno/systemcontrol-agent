@@ -4,7 +4,7 @@
   <groupId>chat.systemc</groupId>
   <artifactId>systemc-java</artifactId>
   <name>SystemC Java</name>
-  <version>1.0.6</version>
+  <version>1.0.8</version>
   <build>
     <finalName>systemc-java</finalName>
     <plugins>

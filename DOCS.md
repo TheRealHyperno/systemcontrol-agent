@@ -1,7 +1,7 @@
 # SystemC Drovex — complete documentation
 
 Covers the **Java** port (the `java` branch) and notes where the **Python** original
-(the `main` branch) differs. Everything applies to release **v1.0.6**.
+(the `main` branch) differs. Everything applies to release **v1.0.8**.
 
 Contents:
 
@@ -211,6 +211,9 @@ whole "backend" concept is just the question *do you want java or python*:
 - `systemc run` dispatches by `BACKEND`: java → this engine's jar, python →
   `backend/python/main.py` (whose `.env` is a symlink to the shared install
   `.env`, so tokens/config are set once and work under both);
+- `systemc panel` does the same dispatch: java → the Swing control panel, python
+  → the tkinter control panel (`backend/python/control_panel.py`), so the app-menu
+  shortcut keeps working after a backend switch.
 - BACKEND lives in `.env`, so the Swing panel, TUI and web API all apply it on
   the next start.
 
