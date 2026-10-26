@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SystemC — control panel (rust)</title>
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --edge:#30363d; --text:#c9d1d9; --mut:#8b949e; --acc:#58a6ff; --ok:#3fb950; --warn:#d29922; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font:14px/1.5 system-ui,sans-serif; }
+  header { padding:12px 20px; border-bottom:1px solid var(--edge); display:flex; align-items:baseline; gap:14px; }
+  header h1 { font-size:16px; color:var(--acc); }
+  header .sub { color:var(--mut); font-size:12px; }
+  nav { display:flex; gap:4px; padding:8px 20px 0; border-bottom:1px solid var(--edge); }
+  nav button { background:none; border:none; color:var(--mut); padding:8px 14px; cursor:pointer; border-bottom:2px solid transparent; }
+  nav button.on { color:var(--text); border-bottom-color:var(--acc); }
+  main { padding:20px; max-width:1080px; margin:0 auto; }
+  .card { background:var(--panel); border:1px solid var(--edge); border-radius:8px; padding:16px; margin-bottom:16px; }
+  .card h2 { font-size:13px; color:var(--mut); text-transform:uppercase; letter-spacing:.05em; margin-bottom:10px; }
+  .kv { display:grid; grid-template-columns:160px 1fr; gap:6px 12px; font-size:13px; }
+  .kv b { color:var(--mut); font-weight:500; }
+  button.act { background:var(--acc); border:none; color:#0d1117; padding:8px 14px; border-radius:6px; cursor:pointer; font-weight:600; }
+  button.ghost { background:var(--panel); border:1px solid var(--edge); color:var(--text); padding:7px 12px; border-radius:6px; cursor:pointer; }
+  input, textarea { background:#0d1117; border:1px solid var(--edge); color:var(--text); border-radius:6px; padding:8px 10px; width:100%; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th { text-align:left; color:var(--mut); font-weight:500; padding:6px 8px; border-bottom:1px solid var(--edge); }
+  td { padding:6px 8px; border-bottom:1px solid #21262d; }
+  .pill { padding:2px 8px; border-radius:10px; font-size:11px; }
+  .green { background:#123a1e; color:var(--ok); }
+  #chatlog { height:340px; overflow-y:auto; background:#0d1117; border:1px solid var(--edge); border-radius:6px; padding:12px; font-size:13px; white-space:pre-wrap; }
+  .me { color:var(--acc); } .agent { color:var(--text); }
+  .row { display:flex; gap:8px; margin-top:8px; }
+  .mut { color:var(--mut); } .err { color:#f85149; }
+  pre.logs { background:#0d1117; border:1px solid var(--edge); padding:10px; border-radius:6px; font-size:12px; overflow:auto; max-height:260px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>SystemC control panel</h1>
+  <span class="sub" id="sub">loading…</span>
+</header>
+<nav id="tabs">
+  <button data-t="overview" class="on">Overview</button>
+  <button data-t="chat">Chat</button>
+  <button data-t="sessions">Sessions</button>
+  <button data-t="memory">Memory</button>
+  <button data-t="tools">Tools</button>
+  <button data-t="service">Service (systemd)</button>
+</nav>
+<main>
+  <section id="t-overview">
+    <div class="card"><h2>Status</h2><div class="kv" id="status"></div></div>
+  </section>
+  <section id="t-chat" hidden>
+    <div class="card"><h2>Chat (direct Ollama, no agent tools)</h2>
+      <div id="chatlog"></div>
+      <div class="row"><input id="chatin" placeholder="message…" autocomplete="off"><button class="act" onclick="sendChat()">Send</button></div>
+    </div>
+  </section>
+  <section id="t-sessions" hidden>
+    <div class="card"><h2>Saved sessions</h2><table><thead><tr><th>key</th><th>label</th><th>turns</th><th>preview</th><th></th></tr></thead><tbody id="sess"></tbody></table></div>
+  </section>
+  <section id="t-memory" hidden>
+    <div class="card"><h2>Long-term (MEMORY.md)</h2><pre class="logs" id="mem-lt"></pre>
+      <div class="row"><input id="fact" placeholder="remember that …"><button class="act" onclick="remember()">Remember</button></div></div>
+    <div class="card"><h2>Daily log</h2><pre class="logs" id="mem-day"></pre></div>
+  </section>
+  <section id="t-tools" hidden>
+    <div class="card"><h2>run_shell</h2>
+      <div class="row"><input id="cmd" placeholder="ls -la" autocomplete="off"><button class="act" onclick="sh(false)">Run</button>
+      <button class="ghost" onclick="sh(true)">Elevated (sudo)</button></div>
+      <pre class="logs" id="shout" style="margin-top:8px">— no output yet —</pre></div>
+  </section>
+  <section id="t-service" hidden>
+    <div class="card"><h2>systemd user service</h2>
+      <p class="mut">Installs <code>systemc.service</code> as a systemd user unit and starts it. Enable <b>linger</b> to also start at boot without login.</p>
+      <div class="row">
+        <button class="act" onclick="svc(0)">Install &amp; start</button>
+        <button class="ghost" onclick="svc(1)">Install + linger</button>
+        <button class="ghost" onclick="uninst()">Uninstall</button>
+      </div>
+      <pre class="logs" id="svclog" style="margin-top:10px">—</pre>
+    </div>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => (s||"").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("nav button").forEach(x => x.classList.remove("on"));
+  b.classList.add("on");
+  document.querySelectorAll("main section").forEach(s => s.hidden = true);
+  $("t-" + b.dataset.t).hidden = false;
+  if (b.dataset.t === "overview") loadStatus();
+  if (b.dataset.t === "sessions") loadSessions();
+  if (b.dataset.t === "memory") loadMemory();
+});
+
+async function loadStatus() {
+  const cfg = await (await fetch("/config")).json();
+  const st = await (await fetch("/api/status")).json();
+  $("sub").textContent = cfg.release + " · model " + cfg.model;
+  $("status").innerHTML =
+    `<b>release</b><span>${esc(cfg.release)}</span>` +
+    `<b>model</b><span>${esc(cfg.model)}</span>` +
+    `<b>provider</b><span>${esc(cfg.provider)}</span>` +
+    `<b>workspace</b><span>${esc(cfg.workdir)}</span>` +
+    `<b>discord token</b><span>${st.discord ? '<span class="pill green">set</span>' : "not set (.env)"}</span>`;
+}
+
+async function loadSessions() {
+  const list = await (await fetch("/sessions")).json();
+  $("sess").innerHTML = list.length ? list.map(s =>
+    `<tr><td>${esc(s.key)}</td><td>${esc(s.label)}</td><td>${s.turns}</td><td>${esc(s.preview)}</td>` +
+    `<td><button class="ghost" onclick="resetSession('${esc(s.key)}')">/reset</button></td></tr>`
+  ).join("") : "<tr><td colspan=5 class=mut>No sessions yet.</td></tr>";
+}
+function resetSession(k) { fetch("/sessions/reset", {method:"POST", headers:{"content-type":"application/json"}, body: JSON.stringify({key:k})}).then(loadSessions); }
+
+async function loadMemory() {
+  const m = await (await fetch("/memory")).json();
+  $("mem-lt").textContent = m.long_term || "— empty —";
+  $("mem-day").textContent = ` (${m.date} + yesterday) ` + "\n" + (m.today || "— empty —") + (m.yesterday ? "": "");
+}
+
+function remember() {
+  const f = $("fact").value.trim(); if (!f) return;
+  fetch("/memory/remember", {method:"POST", headers:{"content-type":"application/json"}, body: JSON.stringify({fact:f})}).then(() => { $("fact").value=""; loadMemory(); });
+}
+
+async function sh(elev) {
+  const cmd = $("cmd").value.trim(); if (!cmd) return;
+  $("shout").textContent = "…running…";
+  const r = await (await fetch("/tools/" + (elev ? "run_shell_elevated" : "run_shell"), {
+    method:"POST", headers:{"content-type":"application/json"}, body: JSON.stringify({command:cmd})
+  })).json();
+  $("shout").textContent = (r.error ? "error: " + r.error + "\n" : "") + (r.stdout || "") + `\n[exit_code: ${r.exit_code}]`;
+}
+
+function svc(linger) {
+  $("svclog").textContent = "installing…";
+  fetch("/service/install", {method:"POST", headers:{"content-type":"application/json"}, body: JSON.stringify({linger: !!linger})})
+    .then(r => r.json()).then(j => renderSvc(j)).catch(e => $("svclog").textContent = "error: " + e);
+}
+function uninst() {
+  $("svclog").textContent = "removing…";
+  fetch("/service/uninstall", {method:"POST"}).then(r => r.json()).then(renderSvc);
+}
+function renderSvc(j) {
+  $("svclog").textContent = j.ok ? `unit ${j.unit} installed/started` : ("failed: " + (j.error || JSON.stringify(j)));
+}
+
+$("chatin").addEventListener("keydown", e => { if (e.key === "Enter") sendChat(); });
+</script>
+<script>
+// ── chat: stream via /ollama/chat proxy ─────────────────────────────────────
+async function _realSendChat() {
+  const q = $("chatin").value.trim(); if (!q) return;
+  $("chatin").value = "";
+  const logEl = $("chatlog");
+  logEl.innerHTML += `<div class="me">you ▸ ${esc(q)}</div>`;
+  const model = (await (await fetch("/config")).json()).model;
+  const resp = await fetch("/ollama/chat", {
+    method: "POST", headers: {"content-type": "application/json"},
+    body: JSON.stringify({model, stream: true, messages: [{role: "user", content: q}]})
+  });
+  const reader = resp.body.getReader(), dec = new TextDecoder();
+  let buf = "";
+  const bubble = document.createElement("div");
+  bubble.className = "agent"; bubble.textContent = "agent ▸ ";
+  logEl.appendChild(bubble);
+  while (true) {
+    const {done, value} = await reader.read(); if (done) break;
+    buf += dec.decode(value, {stream: true});
+    const lines = buf.split("\n"); buf = lines.pop();
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try { const j = JSON.parse(line); bubble.textContent += (j.message && j.message.content) || ""; logEl.scrollTop = logEl.scrollHeight; } catch {}
+    }
+  }
+}
+function sendChat() { _realSendChat(); }
+$("chatin").addEventListener("keydown", e => { if (e.key === "Enter") sendChat(); });
+loadStatus();
+</script>
+</body>
+</html>

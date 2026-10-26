@@ -1,0 +1,8 @@
+[workspace]
+resolver = "2"
+members = ["systemc"]
+
+[profile.release]
+opt-level = 2
+lto = "thin"
+strip = true
